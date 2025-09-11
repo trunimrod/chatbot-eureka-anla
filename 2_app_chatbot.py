@@ -1,4 +1,5 @@
-# 2_app_chatbot.py — robusto (sin pantalla en blanco): MMR + límite de contexto + streaming + logs + ngrok sin secrets
+# 2_app_chatbot.py — robusto: MMR + límite de contexto + streaming + logs + ngrok sin secrets
+# Detecta automáticamente las variables del prompt (context/question/original_question, technical_summary, etc.)
 
 # --- PARCHE PARA SQLITE3 EN STREAMLIT CLOUD ---
 __import__('pysqlite3')
@@ -22,6 +23,7 @@ from langchain_ollama import OllamaLLM
 from langchain.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
+# Asegúrate de tener este archivo junto a 2_app_chatbot.py
 from prompts import EUREKA_PROMPT, EXTRACTOR_PROMPT
 
 # =====================
@@ -34,8 +36,8 @@ MODELO_LLM = os.environ.get("LLM_MODEL", "llama3.2")
 # Recuperación (MMR)
 K_GENERAL = int(os.environ.get("K_GENERAL", 3))
 K_ESPECIFICA = int(os.environ.get("K_ESPECIFICA", 5))
-FETCH_K = int(os.environ.get("FETCH_K", 20))
-MMR_LAMBDA = float(os.environ.get("MMR_LAMBDA", 0.5))
+FETCH_K = int(os.environ.get("FETCH_K", 20))      # candidatos antes de MMR
+MMR_LAMBDA = float(os.environ.get("MMR_LAMBDA", 0.5))  # 0=diversidad, 1=similitud
 
 # Contexto
 MAX_CONTEXT_CHARS = int(os.environ.get("MAX_CONTEXT_CHARS", 12000))
@@ -95,6 +97,7 @@ def _safe_get_source(doc):
 
 # ======== Soporte ngrok/Cloudflare SIN secrets ========
 def _get_query_param(name: str) -> str:
+    """Obtiene un parámetro de query (compatible con APIs nuevas/viejas)."""
     try:
         return st.query_params.get(name, "")
     except Exception:
@@ -171,20 +174,34 @@ def log_interaction(question: str, response: str, docs, scores_map=None, no_docs
 # Helpers de prompts
 # =====================
 def _ensure_prompt(tpl_or_prompt, vars_if_str: Iterable[str] | None = None):
+    """Acepta str o PromptTemplate ya construido (si es str, deja que infiera variables)."""
     if isinstance(tpl_or_prompt, str):
-        return PromptTemplate(template=tpl_or_prompt)  # deja que infiera variables
+        return PromptTemplate(template=tpl_or_prompt)
     return tpl_or_prompt
 
 def _build_kwargs_for_prompt(prompt: PromptTemplate, **values: Any) -> Dict[str, Any]:
+    """
+    Mapea dinámicamente nombres de variables esperadas por el prompt
+    a los valores disponibles. Soporta:
+      - context / contexto / context_text
+      - question / pregunta / query / user_question / original_question
+      - respuesta_tecnica / technical_answer / answer / summary / respuesta / technical_summary
+    """
     wanted = set(getattr(prompt, "input_variables", []) or [])
     out: Dict[str, Any] = {}
+
     def pick(cands: Iterable[str], key: str):
         for c in cands:
             if c in wanted and key in values:
                 out[c] = values[key]; return
+
+    # Contexto
     pick(["context", "contexto", "context_text"], "context")
-    pick(["question", "pregunta", "query", "user_question"], "question")
-    pick(["respuesta_tecnica", "technical_answer", "answer", "summary", "respuesta"], "respuesta_tecnica")
+    # Pregunta (incluye original_question)
+    pick(["question", "pregunta", "query", "user_question", "original_question"], "question")
+    # Resumen técnico (incluye technical_summary)
+    pick(["respuesta_tecnica", "technical_answer", "answer", "summary", "respuesta", "technical_summary"], "respuesta_tecnica")
+
     return out
 
 # =====================
@@ -239,6 +256,7 @@ with st.sidebar:
     url_param = _get_query_param("ollama")
     if url_param and "ollama_input" not in st.session_state:
         st.session_state["ollama_input"] = url_param
+
     default_text = st.session_state.get("ollama_input", os.environ.get("OLLAMA_HOST", "").strip())
     ollama_input = st.text_input(
         "URL pública (ngrok/Cloudflare)",
@@ -272,16 +290,16 @@ with st.sidebar:
     if "ollama_base" in st.session_state:
         st.caption(f"Usando: `{st.session_state['ollama_base']}`")
 
-# ---- Estado inicial (sin conexión): NO detener, siempre mostrar algo ----
+# ---- Estado inicial (sin conexión): mostrar instrucción y detener el resto ----
 if "ollama_base" not in st.session_state:
     st.info(
         "💡 Para empezar, pega en la **barra lateral** la URL pública de tu túnel "
         "(ngrok/Cloudflare) y pulsa **Conectar a Ollama**.\n\n"
         "Ejemplo: `https://6682052ab53b.ngrok-free.app`"
     )
-    st.stop()  # detenemos el resto, pero ya se ve la UI
+    st.stop()
 
-# ---- Cargar componentes sólo después de conectar ----
+# ---- Cargar componentes solo después de conectar ----
 try:
     embeddings, db, llm_extract, llm_eureka_stream = cargar_componentes(st.session_state["ollama_base"])
 except Exception as e:
@@ -332,18 +350,19 @@ if user_q:
 
                 contexto = limitar_contexto(docs, MAX_CONTEXT_CHARS)
 
-                # Paso 1: respuesta técnica (adaptando variables del prompt)
+                # Paso 1: respuesta técnica — adapta variables que pida tu EXTRACTOR_PROMPT
                 extractor_kwargs = _build_kwargs_for_prompt(
                     extractor_pt,
-                    context=contexto,
-                    question=user_q,
+                    context=contexto,   # se mapeará a 'context'/'contexto' según pida el prompt
+                    question=user_q,    # se mapeará a 'question'/'pregunta'/'original_question' si lo pidiera
                 )
                 resp_tecnica = extractor_chain.invoke(extractor_kwargs)
 
-                # Paso 2: explicación en lenguaje claro — STREAMING
+                # Paso 2: explicación en lenguaje claro — STREAMING — adapta variables que pida EUREKA_PROMPT
                 eureka_kwargs = _build_kwargs_for_prompt(
                     eureka_pt,
-                    respuesta_tecnica=resp_tecnica,
+                    respuesta_tecnica=resp_tecnica,  # se mapeará a 'technical_summary'/'respuesta_tecnica'
+                    question=user_q,                 # se mapeará a 'original_question'/'question'
                 )
                 contenedor = st.empty()
                 acumulado = ""
