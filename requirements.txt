@@ -1,8 +1,8 @@
-streamlit==1.38.0
-numpy==1.26.4
-chromadb==0.5.4
-langchain==0.2.19
-langchain-community==0.2.19
-langchain-chroma==0.1.2
-langchain-ollama==0.2.1
-langchain_text_splitters==0.2.2
+streamlit
+numpy
+chromadb
+langchain
+langchain-community
+langchain-chroma
+langchain-ollama
+langchain_text_splitters
