@@ -1,4 +1,4 @@
-# 2_app_chatbot.py — con mejoras: MMR + límite de contexto + streaming + logs SQLite
+# 2_app_chatbot.py — MMR + límite de contexto + streaming + logs SQLite + ngrok sin secrets
 
 # --- PARCHE PARA SQLITE3 EN STREAMLIT CLOUD ---
 # Carga una versión compatible de SQLite3 antes de que chromadb la necesite.
@@ -16,13 +16,14 @@ from datetime import datetime
 
 import streamlit as st
 import requests
+
 from langchain_chroma import Chroma
 from langchain_ollama.embeddings import OllamaEmbeddings
 from langchain_ollama import OllamaLLM
 from langchain.prompts import PromptTemplate  # puede recibirse str o PromptTemplate desde prompts.py
 from langchain_core.output_parsers import StrOutputParser
 
-# Prompts existentes
+# Prompts existentes (mantén este archivo junto a 2_app_chatbot.py)
 from prompts import EUREKA_PROMPT, EXTRACTOR_PROMPT
 
 # =====================
@@ -31,7 +32,6 @@ from prompts import EUREKA_PROMPT, EXTRACTOR_PROMPT
 DIRECTORIO_CHROMA_DB = os.environ.get("CHROMA_DB_DIR", "chroma_db")
 MODELO_EMBEDDING = os.environ.get("EMBED_MODEL", "nomic-embed-text")
 MODELO_LLM = os.environ.get("LLM_MODEL", "llama3.2")
-OLLAMA_HOST = "hhttps://6682052ab53b.ngrok-free.app"
 
 # Recuperación (MMR)
 K_GENERAL = int(os.environ.get("K_GENERAL", 3))
@@ -50,7 +50,6 @@ st.set_page_config(page_title="Eureka – ANLA (RAG)", page_icon="💬", layout=
 # =====================
 # Utilidades
 # =====================
-
 def es_pregunta_especifica(pregunta: str) -> bool:
     """Heurística simple para detectar especificidad (proyecto/empresa/lugar)."""
     patrones_especificos = [
@@ -68,11 +67,7 @@ def es_pregunta_especifica(pregunta: str) -> bool:
 def ajustar_parametros_busqueda(pregunta: str) -> dict:
     """Devuelve kwargs para as_retriever() con MMR y k dinámico."""
     k = K_ESPECIFICA if es_pregunta_especifica(pregunta) else K_GENERAL
-    return {
-        "k": k,
-        "fetch_k": FETCH_K,
-        "lambda_mult": MMR_LAMBDA,
-    }
+    return {"k": k, "fetch_k": FETCH_K, "lambda_mult": MMR_LAMBDA}
 
 
 def filtrar_documentos_por_relevancia(documentos, pregunta: str, es_especifica: bool):
@@ -101,7 +96,6 @@ def limitar_contexto(documentos, max_chars: int) -> str:
         header = f"\n\n[DOC {i}]\n"
         chunk = header + txt
         if total + len(chunk) > max_chars:
-            # corta el último pedazo si aún no hemos añadido nada
             restante = max_chars - total
             if restante > len(header):
                 piezas.append(header + txt[: restante - len(header)])
@@ -115,10 +109,43 @@ def _safe_get_source(doc):
     src = (doc.metadata or {}).get("source")
     return src or "Fuente no encontrada"
 
+
+# ======== Soporte ngrok/Cloudflare SIN secrets ========
+def _get_query_param(name: str) -> str:
+    """Obtiene un parámetro de query de forma robusta (nueva o vieja API)."""
+    try:
+        return st.query_params.get(name, "")
+    except Exception:
+        try:
+            return st.experimental_get_query_params().get(name, [""])[0]
+        except Exception:
+            return ""
+
+
+def _normalize_base_url(url: str) -> str:
+    base = (url or "").strip()
+    if not base:
+        raise ValueError("No se proporcionó URL pública para Ollama.")
+    if "://" not in base:
+        base = "https://" + base
+    base = base.rstrip("/")
+    if any(h in base for h in ["localhost", "127.0.0.1", "0.0.0.0"]):
+        raise ValueError("La URL apunta a host local. Usa la URL pública (ngrok/Cloudflare).")
+    return base
+
+
+def _health_check_ollama(base: str, timeout: float = 8.0) -> tuple[bool, str]:
+    try:
+        r = requests.get(f"{base}/api/tags", timeout=timeout)
+        r.raise_for_status()
+        return True, "OK"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
 # =====================
 # Logging (SQLite)
 # =====================
-
 def init_logging_db(path: str = LOG_DB_PATH):
     try:
         con = sqlite3.connect(path)
@@ -172,54 +199,28 @@ def log_interaction(question: str, response: str, docs, scores_map=None, no_docs
     except Exception as e:
         st.warning(f"No se pudo guardar el log: {e}")
 
+
 # =====================
-# Carga de componentes IA
+# Carga de componentes IA (cacheados por base_url)
 # =====================
 @st.cache_resource(show_spinner=False)
-def cargar_componentes():
-    # Comprobación previa de conectividad a Ollama (vía ngrok)
-    base = OLLAMA_HOST.rstrip("/")
-    if not base.startswith("http://") and not base.startswith("https://"):
-        st.error("`OLLAMA_HOST` debe incluir esquema: ej. `https://<tu-subdominio>.ngrok-free.app`")
-        st.stop()
-    try:
-        r = requests.get(f"{base}/api/tags", timeout=8)
-        r.raise_for_status()
-    except Exception as e:
-        st.error(
-            """
-            **No puedo conectarme a Ollama** en `OLLAMA_HOST`.
-
-            - Valor actual: `{host}`
-            - Prueba falló en `GET /api/tags`
-
-            **Verifica esto en tu equipo (local):**
-            1. Arranca Ollama escuchando en todas las interfaces: `OLLAMA_HOST=0.0.0.0:11434 ollama serve`
-            2. Abre el túnel: `ngrok http 11434`
-            3. Copia la URL pública `https://*.ngrok-free.app` y colócala en los **Secrets** de Streamlit como `OLLAMA_HOST`.
-            4. Desde fuera de tu red, prueba: `curl {host}/api/tags`
-
-            Si persiste, considera **Cloudflare Tunnel** para mayor estabilidad de conexiones largas (SSE).
-            """.format(host=base)
-        )
-        st.stop()
-
-    embeddings = OllamaEmbeddings(model=MODELO_EMBEDDING, base_url=base)
+def cargar_componentes(base_url: str):
+    ok, detail = _health_check_ollama(base_url)
+    if not ok:
+        raise RuntimeError(f"No puedo conectarme a Ollama en {base_url}. Detalle: {detail}")
+    embeddings = OllamaEmbeddings(model=MODELO_EMBEDDING, base_url=base_url)
     db = Chroma(persist_directory=DIRECTORIO_CHROMA_DB, embedding_function=embeddings)
-    llm_extract = OllamaLLM(model=MODELO_LLM, temperature=0.2, base_url=base)
-    # LLM con streaming habilitado para la etapa EUREKA
-    llm_eureka_stream = OllamaLLM(model=MODELO_LLM, temperature=0.2, base_url=base, streaming=True)
+    llm_extract = OllamaLLM(model=MODELO_LLM, temperature=0.2, base_url=base_url)
+    llm_eureka_stream = OllamaLLM(model=MODELO_LLM, temperature=0.2, base_url=base_url, streaming=True)
     return embeddings, db, llm_extract, llm_eureka_stream
 
 
 @st.cache_resource(show_spinner=False)
 def construir_cadenas(llm_extract: OllamaLLM, llm_eureka_stream: OllamaLLM):
     # Asegura compatibilidad: acepta str o PromptTemplate
-    from langchain.prompts import PromptTemplate as _PT
-
     def _ensure_prompt(tpl_or_prompt, vars_):
         if isinstance(tpl_or_prompt, str):
-            return _PT(template=tpl_or_prompt, input_variables=vars_)
+            return PromptTemplate(template=tpl_or_prompt, input_variables=vars_)
         return tpl_or_prompt
 
     extractor_pt = _ensure_prompt(EXTRACTOR_PROMPT, ["contexto", "pregunta"])
@@ -227,7 +228,6 @@ def construir_cadenas(llm_extract: OllamaLLM, llm_eureka_stream: OllamaLLM):
 
     extractor = extractor_pt | llm_extract | StrOutputParser()
     eureka_stream_chain = eureka_pt | llm_eureka_stream | StrOutputParser()
-
     return extractor, eureka_stream_chain
 
 
@@ -239,12 +239,10 @@ def crear_retriever(db: Chroma, pregunta: str):
 
 def contar_indice(db: Chroma) -> int:
     try:
-        # Acceso interno a la colección subyacente
         if hasattr(db, "_collection") and db._collection is not None:
             return int(db._collection.count())
     except Exception:
         pass
-    # Fallback: intenta una búsqueda con k=1
     try:
         res = db.similarity_search("prueba", k=1)
         return 1 if res else 0
@@ -258,17 +256,92 @@ def contar_indice(db: Chroma) -> int:
 st.title("Eureka – ANLA · Asistente ciudadano")
 st.caption("Chat RAG con fuentes verificables. Ahora con MMR, streaming y auditoría.")
 
+# Barra lateral: Conexión a Ollama (ngrok/Cloudflare)
+with st.sidebar:
+    st.subheader("Conexión a Ollama")
+    # 1) Param en URL (?ollama=...) tiene prioridad
+    url_param = _get_query_param("ollama")
+    if url_param and "ollama_base" not in st.session_state:
+        try:
+            st.session_state["ollama_base"] = _normalize_base_url(url_param)
+        except Exception:
+            pass
+
+    # 2) Si ya hay una en sesión, úsala como default; si no, intenta leer de env var OLLAMA_HOST (opcional)
+    env_hint = os.environ.get("OLLAMA_HOST", "").strip()
+    default_text = st.session_state.get("ollama_base", env_hint)
+
+    ollama_input = st.text_input(
+        "URL pública (ngrok/Cloudflare)",
+        value=default_text,
+        placeholder="https://xxxx.ngrok-free.app",
+        help="Ej: https://6682052ab53b.ngrok-free.app",
+    )
+    conectado = False
+    detalle = ""
+
+    if ollama_input:
+        try:
+            candidate = _normalize_base_url(ollama_input)
+            ok, detalle = _health_check_ollama(candidate)
+            if ok:
+                st.session_state["ollama_base"] = candidate
+                conectado = True
+        except Exception as e:
+            detalle = str(e)
+
+    col_a, col_b = st.columns([1, 1])
+    with col_a:
+        btn = st.button("Conectar a Ollama", use_container_width=True)
+    with col_b:
+        st.write("")  # separador
+
+    if btn and ollama_input:
+        try:
+            candidate = _normalize_base_url(ollama_input)
+            ok, detalle = _health_check_ollama(candidate)
+            if ok:
+                st.session_state["ollama_base"] = candidate
+                conectado = True
+                st.success("Conectado ✅")
+            else:
+                st.error(f"No conecta: {detalle}")
+        except Exception as e:
+            st.error(f"URL inválida: {e}")
+
+    if "ollama_base" in st.session_state:
+        st.info(f"Usando: `{st.session_state['ollama_base']}`")
+        if conectado:
+            st.caption("Health-check OK")
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
 init_logging_db()
-embeddings, db, llm_extract, llm_eureka_stream = cargar_componentes()
+
+# Necesitamos una base_url válida antes de cargar componentes
+if "ollama_base" not in st.session_state:
+    st.warning(
+        "Pega arriba la **URL pública** de tu túnel (ngrok/Cloudflare), por ejemplo: "
+        "`https://6682052ab53b.ngrok-free.app`. "
+        "También puedes abrir el app con `?ollama=<tu-url>`."
+    )
+    st.stop()
+
+# Cargar componentes con la base activa
+try:
+    embeddings, db, llm_extract, llm_eureka_stream = cargar_componentes(st.session_state["ollama_base"])
+except Exception as e:
+    st.error(f"Ocurrió un error al conectar con Ollama: {e}")
+    st.stop()
+
 extractor_chain, eureka_stream_chain = construir_cadenas(llm_extract, llm_eureka_stream)
 
 indice_docs = contar_indice(db)
 if indice_docs == 0:
     st.warning("No encuentro documentos en el índice (Chroma). Carga/adjunta el `chroma_db` o re-indexa antes de usar el chat.")
 
+# Historial
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
@@ -294,12 +367,12 @@ if user_q:
                     else:
                         no_docs_reason = "El retriever no devolvió resultados (consulta fuera de dominio o parámetros muy restrictivos)"
                     st.info(
-                        """**No encontré documentos relevantes.**
-                        
-                        *Motivo:* {motivo}
-                        
-                        *Sugerencias:* verifica que el índice `chroma_db` esté disponible y que tu pregunta esté relacionada con los temas del repositorio de documentos.
-                        """.format(motivo=no_docs_reason)
+                        f"""**No encontré documentos relevantes.**
+
+*Motivo:* {no_docs_reason}
+
+*Sugerencias:* verifica que el índice `chroma_db` esté disponible y que tu pregunta esté relacionada con los temas del repositorio de documentos.
+                        """
                     )
                     log_interaction(user_q, response="", docs=[], scores_map={}, no_docs_reason=no_docs_reason)
                     st.stop()
@@ -345,7 +418,6 @@ if user_q:
                 scores_map = {}
                 try:
                     sim_pairs = db.similarity_search_with_score(user_q, k=params.get("k", 3))
-                    # mapear por source -> score
                     for d, s in sim_pairs:
                         src = _safe_get_source(d)
                         scores_map[src] = float(s)
