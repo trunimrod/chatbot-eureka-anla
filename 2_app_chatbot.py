@@ -178,22 +178,7 @@ def log_interaction(question: str, response: str, docs, scores_map=None, no_docs
 def cargar_componentes():
     embeddings = OllamaEmbeddings(model=MODELO_EMBEDDING, base_url=OLLAMA_HOST)
     db = Chroma(persist_directory=DIRECTORIO_CHROMA_DB, embedding_function=embeddings)
-   @st.cache_resource(show_spinner=False)
-def construir_cadenas(llm_extract: OllamaLLM, llm_eureka_stream: OllamaLLM):
-    # Permite que EXTRACTOR_PROMPT / EUREKA_PROMPT sean str o PromptTemplate ya construido
-    def _ensure_prompt(tpl_or_prompt, vars_):
-        if isinstance(tpl_or_prompt, str):
-            return PromptTemplate(template=tpl_or_prompt, input_variables=vars_)
-        # Si ya es un PromptTemplate o similar, lo usamos tal cual
-        return tpl_or_prompt
-
-    extractor_pt = _ensure_prompt(EXTRACTOR_PROMPT, ["contexto", "pregunta"])
-    eureka_pt = _ensure_prompt(EUREKA_PROMPT, ["respuesta_tecnica"])
-
-    extractor = extractor_pt | llm_extract | StrOutputParser()
-    eureka_stream_chain = eureka_pt | llm_eureka_stream | StrOutputParser()
-
-    return extractor, eureka_stream_chain= OllamaLLM(model=MODELO_LLM, temperature=0.2, base_url=OLLAMA_HOST)
+    llm_extract = OllamaLLM(model=MODELO_LLM, temperature=0.2, base_url=OLLAMA_HOST)
     # LLM con streaming habilitado para la etapa EUREKA
     llm_eureka_stream = OllamaLLM(model=MODELO_LLM, temperature=0.2, base_url=OLLAMA_HOST, streaming=True)
     return embeddings, db, llm_extract, llm_eureka_stream
@@ -201,15 +186,19 @@ def construir_cadenas(llm_extract: OllamaLLM, llm_eureka_stream: OllamaLLM):
 
 @st.cache_resource(show_spinner=False)
 def construir_cadenas(llm_extract: OllamaLLM, llm_eureka_stream: OllamaLLM):
-    extractor = PromptTemplate(
-        template=EXTRACTOR_PROMPT,
-        input_variables=["contexto", "pregunta"],
-    ) | llm_extract | StrOutputParser()
+    # Asegura compatibilidad: acepta str o PromptTemplate
+    from langchain.prompts import PromptTemplate as _PT
 
-    eureka_stream_chain = PromptTemplate(
-        template=EUREKA_PROMPT,
-        input_variables=["respuesta_tecnica"],
-    ) | llm_eureka_stream | StrOutputParser()
+    def _ensure_prompt(tpl_or_prompt, vars_):
+        if isinstance(tpl_or_prompt, str):
+            return _PT(template=tpl_or_prompt, input_variables=vars_)
+        return tpl_or_prompt
+
+    extractor_pt = _ensure_prompt(EXTRACTOR_PROMPT, ["contexto", "pregunta"])
+    eureka_pt = _ensure_prompt(EUREKA_PROMPT, ["respuesta_tecnica"])
+
+    extractor = extractor_pt | llm_extract | StrOutputParser()
+    eureka_stream_chain = eureka_pt | llm_eureka_stream | StrOutputParser()
 
     return extractor, eureka_stream_chain
 
