@@ -1,11 +1,11 @@
-# 2_app_chatbot.py (Versión Final con Orquestación de Doble IA)
+# 2_app_chatbot.py
 
 import streamlit as st
 from langchain_chroma import Chroma
 from langchain_ollama.embeddings import OllamaEmbeddings
 from langchain_ollama import OllamaLLM
 from langchain.prompts import PromptTemplate
-from langchain_core.runnables import RunnablePassthrough, RunnableParallel
+from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 
 # Importar los dos prompts
@@ -15,24 +15,22 @@ from prompts import EUREKA_PROMPT, EXTRACTOR_PROMPT
 DIRECTORIO_CHROMA_DB = "chroma_db"
 MODELO_EMBEDDING = "nomic-embed-text"
 MODELO_LLM = "llama3.2"
+# Para despliegue local, usa "http://localhost:11434"
+# Para despliegue en la nube, reemplaza con tu URL pública (de ngrok o Hugging Face Spaces)
+OLLAMA_HOST = "https://ce25c12c321e.ngrok-free.app"
 
-# --- LÓGICA DE TRANSFORMACIÓN DE CONSULTA ---
-@st.cache_resource
-def crear_cadena_de_reescritura(_llm):
-    template = """Tu tarea es transformar la siguiente pregunta de un ciudadano en una consulta técnica y optimizada para buscar en una base de datos vectorial de documentos legales y ambientales. No respondas la pregunta. Solo genera una versión mejorada de la pregunta que use terminología técnica relevante.
-    Ejemplo: Pregunta Original: "se esta construyendo una carretera cerca a mi casa, que hago?" -> Consulta Generada: "Derechos de participación ciudadana en proyectos de infraestructura vial, licenciamiento ambiental para carreteras, y acceso a estudios de impacto ambiental."
-    Ahora, transforma esta pregunta: Pregunta Original: "{question}" -> Consulta Generada:"""
-    prompt = PromptTemplate(input_variables=["question"], template=template)
-    return prompt | _llm | StrOutputParser()
 
 # --- CADENA DE CONVERSACIÓN DE DOS PASOS ---
 @st.cache_resource
 def construir_cadena_completa():
+    """
+    Construye la cadena de IA completa, incluyendo la extracción técnica y la traducción a lenguaje claro.
+    """
     try:
         # Cargar componentes pesados
-        embeddings = OllamaEmbeddings(model=MODELO_EMBEDDING)
+        embeddings = OllamaEmbeddings(model=MODELO_EMBEDDING, base_url=OLLAMA_HOST)
         db = Chroma(persist_directory=DIRECTORIO_CHROMA_DB, embedding_function=embeddings)
-        llm = OllamaLLM(model=MODELO_LLM, temperature=0.2)
+        llm = OllamaLLM(model=MODELO_LLM, temperature=0.2, base_url=OLLAMA_HOST)
         retriever = db.as_retriever(search_kwargs={"k": 5})
 
         # IA #1: Cadena para extraer hechos técnicos
@@ -88,7 +86,7 @@ if prompt := st.chat_input("Ej: ¿Cuáles son mis derechos si un proyecto me afe
                     
                     # La búsqueda de fuentes se hace por separado para asegurar la precisión
                     documentos_fuente = retriever.invoke(prompt)
-                    fuentes = {doc.metadata['source'] for doc in documentos_fuente if 'source' in doc.metadata}
+                    fuentes = {doc.metadata['source'] for doc in documentos_fuente if 'source' in doc.metadata and doc.metadata['source'] != 'Fuente no encontrada'}
                     
                     respuesta_final = resumen_conversacional
                     if fuentes and "No he encontrado información" not in resumen_conversacional:
