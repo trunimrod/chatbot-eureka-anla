@@ -1,5 +1,6 @@
 # 2_app_chatbot.py — robusto: MMR + límite de contexto + streaming + logs + ngrok sin secrets
-# Detecta automáticamente las variables del prompt (context/question/original_question, technical_summary, etc.)
+# Detecta intención (saludo/charla) para no disparar RAG en saludos.
+# Mapea variables de prompt (context/question/original_question, technical_summary, etc.)
 
 # --- PARCHE PARA SQLITE3 EN STREAMLIT CLOUD ---
 __import__('pysqlite3')
@@ -12,7 +13,7 @@ import re
 import json
 import sqlite3
 from datetime import datetime
-from typing import Dict, Any, Iterable
+from typing import Dict, Any, Iterable, Tuple
 
 import streamlit as st
 import requests
@@ -95,9 +96,32 @@ def _safe_get_source(doc):
     src = (doc.metadata or {}).get("source")
     return src or "Fuente no encontrada"
 
+# ======== Clasificador de intención (no LLM) ========
+_GREET_WORDS = ["hola","holi","hello","hey","buenas","buenos días","buenas tardes","buenas noches"]
+_SMALLTALK_PAT = re.compile(r"(cómo estás|que tal|qué tal|gracias|de nada|ok|vale|bkn|listo|perfecto)", re.I)
+_QWORDS_PAT = re.compile(r"\b(qué|que|cómo|como|cuál|cual|cuándo|cuando|dónde|donde|por qué|porque|quién|quien|cuánto|cuanto)\b", re.I)
+
+def clasificar_intencion(texto: str) -> str:
+    t = (texto or "").strip()
+    tl = t.lower()
+    if not tl:
+        return "vacio"
+    if any(tl.startswith(w) or w in tl for w in _GREET_WORDS):
+        # saludos breves sin signo de interrogación ni palabra interrogativa
+        if "?" not in tl and not _QWORDS_PAT.search(tl) and len(tl.split()) <= 4:
+            return "saludo"
+    if _SMALLTALK_PAT.search(tl):
+        return "charla"
+    # palabras clave del dominio ANLA
+    dom_kw = ["anla","licencia","licenciamiento","ambiental","eia","pma","permiso","resolución","audiencia",
+              "sustracción","forestal","vertimiento","ruido","emisión","mina","hidrocarburos","energía","proyecto",
+              "evaluación","impacto","autoridad","trámite","expediente"]
+    if _QWORDS_PAT.search(tl) or "?" in tl or any(k in tl for k in dom_kw):
+        return "consulta"
+    return "indeterminado"
+
 # ======== Soporte ngrok/Cloudflare SIN secrets ========
 def _get_query_param(name: str) -> str:
-    """Obtiene un parámetro de query (compatible con APIs nuevas/viejas)."""
     try:
         return st.query_params.get(name, "")
     except Exception:
@@ -117,7 +141,7 @@ def _normalize_base_url(url: str) -> str:
         raise ValueError("La URL apunta a host local. Usa la URL pública (ngrok/Cloudflare).")
     return base
 
-def _health_check_ollama(base: str, timeout: float = 5.0) -> tuple[bool, str]:
+def _health_check_ollama(base: str, timeout: float = 5.0) -> Tuple[bool, str]:
     try:
         r = requests.get(f"{base}/api/tags", timeout=timeout)
         r.raise_for_status()
@@ -174,15 +198,14 @@ def log_interaction(question: str, response: str, docs, scores_map=None, no_docs
 # Helpers de prompts
 # =====================
 def _ensure_prompt(tpl_or_prompt, vars_if_str: Iterable[str] | None = None):
-    """Acepta str o PromptTemplate ya construido (si es str, deja que infiera variables)."""
     if isinstance(tpl_or_prompt, str):
         return PromptTemplate(template=tpl_or_prompt)
     return tpl_or_prompt
 
 def _build_kwargs_for_prompt(prompt: PromptTemplate, **values: Any) -> Dict[str, Any]:
     """
-    Mapea dinámicamente nombres de variables esperadas por el prompt
-    a los valores disponibles. Soporta:
+    Mapea dinámicamente variables esperadas por el prompt a valores disponibles.
+    Soporta:
       - context / contexto / context_text
       - question / pregunta / query / user_question / original_question
       - respuesta_tecnica / technical_answer / answer / summary / respuesta / technical_summary
@@ -195,13 +218,9 @@ def _build_kwargs_for_prompt(prompt: PromptTemplate, **values: Any) -> Dict[str,
             if c in wanted and key in values:
                 out[c] = values[key]; return
 
-    # Contexto
     pick(["context", "contexto", "context_text"], "context")
-    # Pregunta (incluye original_question)
     pick(["question", "pregunta", "query", "user_question", "original_question"], "question")
-    # Resumen técnico (incluye technical_summary)
     pick(["respuesta_tecnica", "technical_answer", "answer", "summary", "respuesta", "technical_summary"], "respuesta_tecnica")
-
     return out
 
 # =====================
@@ -290,7 +309,7 @@ with st.sidebar:
     if "ollama_base" in st.session_state:
         st.caption(f"Usando: `{st.session_state['ollama_base']}`")
 
-# ---- Estado inicial (sin conexión): mostrar instrucción y detener el resto ----
+# ---- Estado inicial (sin conexión): instrucción y detener el resto ----
 if "ollama_base" not in st.session_state:
     st.info(
         "💡 Para empezar, pega en la **barra lateral** la URL pública de tu túnel "
@@ -326,9 +345,25 @@ if user_q:
     with st.chat_message("user"):
         st.markdown(user_q)
 
+    # === Gating por intención: evita RAG con saludos/charla ===
+    intent = clasificar_intencion(user_q)
+    if intent in ("saludo", "charla", "indeterminado", "vacio"):
+        sugerencias = (
+            "¿Sobre qué tema ambiental te gustaría saber?\n\n"
+            "Ejemplos:\n"
+            "- ¿Qué es la licencia ambiental y cuándo se requiere?\n"
+            "- ¿Cómo consultar el estado de un expediente en la ANLA?\n"
+            "- ¿Qué pasos siguen para una Evaluación de Impacto Ambiental (EIA)?"
+        )
+        respuesta_breve = "¡Hola! 👋 Estoy listo para ayudarte sobre licenciamiento y trámites ambientales.\n\n" + sugerencias
+        with st.chat_message("assistant"):
+            st.markdown(respuesta_breve)
+        st.session_state.messages.append({"role": "assistant", "content": respuesta_breve})
+        log_interaction(user_q, respuesta_breve, docs=[], scores_map={}, no_docs_reason=f"intencion:{intent}")
+        st.stop()
+
     with st.chat_message("assistant"):
         with st.spinner("Buscando en la base, extrayendo y explicando en lenguaje claro…"):
-            no_docs_reason = None
             try:
                 retriever, params = crear_retriever(db, user_q)
                 docs_raw = retriever.invoke(user_q)
@@ -350,19 +385,19 @@ if user_q:
 
                 contexto = limitar_contexto(docs, MAX_CONTEXT_CHARS)
 
-                # Paso 1: respuesta técnica — adapta variables que pida tu EXTRACTOR_PROMPT
+                # Paso 1: respuesta técnica — adapta variables del EXTRACTOR
                 extractor_kwargs = _build_kwargs_for_prompt(
                     extractor_pt,
-                    context=contexto,   # se mapeará a 'context'/'contexto' según pida el prompt
-                    question=user_q,    # se mapeará a 'question'/'pregunta'/'original_question' si lo pidiera
+                    context=contexto,    # 'context'/'contexto'
+                    question=user_q,     # 'question'/'pregunta'/'original_question'
                 )
                 resp_tecnica = extractor_chain.invoke(extractor_kwargs)
 
-                # Paso 2: explicación en lenguaje claro — STREAMING — adapta variables que pida EUREKA_PROMPT
+                # Paso 2: explicación en lenguaje claro — STREAMING — adapta variables del EUREKA
                 eureka_kwargs = _build_kwargs_for_prompt(
                     eureka_pt,
-                    respuesta_tecnica=resp_tecnica,  # se mapeará a 'technical_summary'/'respuesta_tecnica'
-                    question=user_q,                 # se mapeará a 'original_question'/'question'
+                    respuesta_tecnica=resp_tecnica,  # 'technical_summary'/'respuesta_tecnica'
+                    question=user_q,                 # 'original_question'/'question'
                 )
                 contenedor = st.empty()
                 acumulado = ""
