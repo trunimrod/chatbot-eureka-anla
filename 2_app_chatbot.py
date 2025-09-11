@@ -15,6 +15,7 @@ import sqlite3
 from datetime import datetime
 
 import streamlit as st
+import requests
 from langchain_chroma import Chroma
 from langchain_ollama.embeddings import OllamaEmbeddings
 from langchain_ollama import OllamaLLM
@@ -30,7 +31,7 @@ from prompts import EUREKA_PROMPT, EXTRACTOR_PROMPT
 DIRECTORIO_CHROMA_DB = os.environ.get("CHROMA_DB_DIR", "chroma_db")
 MODELO_EMBEDDING = os.environ.get("EMBED_MODEL", "nomic-embed-text")
 MODELO_LLM = os.environ.get("LLM_MODEL", "llama3.2")
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+OLLAMA_HOST = "hhttps://6682052ab53b.ngrok-free.app"
 
 # Recuperación (MMR)
 K_GENERAL = int(os.environ.get("K_GENERAL", 3))
@@ -176,11 +177,38 @@ def log_interaction(question: str, response: str, docs, scores_map=None, no_docs
 # =====================
 @st.cache_resource(show_spinner=False)
 def cargar_componentes():
-    embeddings = OllamaEmbeddings(model=MODELO_EMBEDDING, base_url=OLLAMA_HOST)
+    # Comprobación previa de conectividad a Ollama (vía ngrok)
+    base = OLLAMA_HOST.rstrip("/")
+    if not base.startswith("http://") and not base.startswith("https://"):
+        st.error("`OLLAMA_HOST` debe incluir esquema: ej. `https://<tu-subdominio>.ngrok-free.app`")
+        st.stop()
+    try:
+        r = requests.get(f"{base}/api/tags", timeout=8)
+        r.raise_for_status()
+    except Exception as e:
+        st.error(
+            """
+            **No puedo conectarme a Ollama** en `OLLAMA_HOST`.
+
+            - Valor actual: `{host}`
+            - Prueba falló en `GET /api/tags`
+
+            **Verifica esto en tu equipo (local):**
+            1. Arranca Ollama escuchando en todas las interfaces: `OLLAMA_HOST=0.0.0.0:11434 ollama serve`
+            2. Abre el túnel: `ngrok http 11434`
+            3. Copia la URL pública `https://*.ngrok-free.app` y colócala en los **Secrets** de Streamlit como `OLLAMA_HOST`.
+            4. Desde fuera de tu red, prueba: `curl {host}/api/tags`
+
+            Si persiste, considera **Cloudflare Tunnel** para mayor estabilidad de conexiones largas (SSE).
+            """.format(host=base)
+        )
+        st.stop()
+
+    embeddings = OllamaEmbeddings(model=MODELO_EMBEDDING, base_url=base)
     db = Chroma(persist_directory=DIRECTORIO_CHROMA_DB, embedding_function=embeddings)
-    llm_extract = OllamaLLM(model=MODELO_LLM, temperature=0.2, base_url=OLLAMA_HOST)
+    llm_extract = OllamaLLM(model=MODELO_LLM, temperature=0.2, base_url=base)
     # LLM con streaming habilitado para la etapa EUREKA
-    llm_eureka_stream = OllamaLLM(model=MODELO_LLM, temperature=0.2, base_url=OLLAMA_HOST, streaming=True)
+    llm_eureka_stream = OllamaLLM(model=MODELO_LLM, temperature=0.2, base_url=base, streaming=True)
     return embeddings, db, llm_extract, llm_eureka_stream
 
 
