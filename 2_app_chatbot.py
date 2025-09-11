@@ -22,7 +22,7 @@ from prompts import EUREKA_PROMPT, EXTRACTOR_PROMPT
 DIRECTORIO_CHROMA_DB = "chroma_db"
 MODELO_EMBEDDING = "nomic-embed-text"
 MODELO_LLM = "llama3.2"
-OLLAMA_HOST = "https://ce25c12c321e.ngrok-free.app" # Reemplaza con tu URL de ngrok para despliegue
+OLLAMA_HOST = "https://6682052ab53b.ngrok-free.app" # Reemplaza con tu URL de ngrok para despliegue
 
 # --- CADENA DE CONVERSACIÓN DE DOS PASOS ---
 @st.cache_resource
