@@ -1,0 +1,14 @@
+# Archivos de sistema
+.DS_Store
+
+# Carpetas de caché de Python
+__pycache__/
+*.pyc
+
+# Carpetas de entorno virtual
+.venv/
+venv/
+ENV/
+
+# Carpetas de Jupyter Notebook
+.ipynb_checkpoints/
