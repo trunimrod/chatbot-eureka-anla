@@ -1,4 +1,11 @@
-# 2_app_chatbot.py
+# 2_app_chatbot.py (Versión Final con Parche para Despliegue)
+
+# --- PARCHE PARA SQLITE3 EN STREAMLIT CLOUD ---
+# Carga una versión compatible de SQLite3 antes de que chromadb la necesite.
+__import__('pysqlite3')
+import sys
+sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+# --- FIN DEL PARCHE ---
 
 import streamlit as st
 from langchain_chroma import Chroma
@@ -15,25 +22,17 @@ from prompts import EUREKA_PROMPT, EXTRACTOR_PROMPT
 DIRECTORIO_CHROMA_DB = "chroma_db"
 MODELO_EMBEDDING = "nomic-embed-text"
 MODELO_LLM = "llama3.2"
-# Para despliegue local, usa "http://localhost:11434"
-# Para despliegue en la nube, reemplaza con tu URL pública (de ngrok o Hugging Face Spaces)
-OLLAMA_HOST = "https://ce25c12c321e.ngrok-free.app"
-
+OLLAMA_HOST = "https://ce25c12c321e.ngrok-free.app" # Reemplaza con tu URL de ngrok para despliegue
 
 # --- CADENA DE CONVERSACIÓN DE DOS PASOS ---
 @st.cache_resource
 def construir_cadena_completa():
-    """
-    Construye la cadena de IA completa, incluyendo la extracción técnica y la traducción a lenguaje claro.
-    """
     try:
-        # Cargar componentes pesados
         embeddings = OllamaEmbeddings(model=MODELO_EMBEDDING, base_url=OLLAMA_HOST)
         db = Chroma(persist_directory=DIRECTORIO_CHROMA_DB, embedding_function=embeddings)
         llm = OllamaLLM(model=MODELO_LLM, temperature=0.2, base_url=OLLAMA_HOST)
         retriever = db.as_retriever(search_kwargs={"k": 5})
 
-        # IA #1: Cadena para extraer hechos técnicos
         cadena_extractora = (
             {"context": retriever, "question": RunnablePassthrough()}
             | EXTRACTOR_PROMPT
@@ -41,7 +40,6 @@ def construir_cadena_completa():
             | StrOutputParser()
         )
 
-        # IA #2: Cadena para traducir a lenguaje claro
         cadena_traductora = (
             {"technical_summary": cadena_extractora, "original_question": RunnablePassthrough()}
             | EUREKA_PROMPT
@@ -81,10 +79,8 @@ if prompt := st.chat_input("Ej: ¿Cuáles son mis derechos si un proyecto me afe
         with st.chat_message("assistant"):
             with st.spinner("Entendiendo tu pregunta, buscando y traduciendo a lenguaje claro..."):
                 try:
-                    # Invocar la cadena completa
                     resumen_conversacional = cadena_final.invoke(prompt)
                     
-                    # La búsqueda de fuentes se hace por separado para asegurar la precisión
                     documentos_fuente = retriever.invoke(prompt)
                     fuentes = {doc.metadata['source'] for doc in documentos_fuente if 'source' in doc.metadata and doc.metadata['source'] != 'Fuente no encontrada'}
                     
@@ -102,6 +98,5 @@ if prompt := st.chat_input("Ej: ¿Cuáles son mis derechos si un proyecto me afe
 
                 except Exception as e:
                     st.error(f"Ocurrió un error: {e}")
-
     else:
         st.error("El chatbot no está disponible.")
