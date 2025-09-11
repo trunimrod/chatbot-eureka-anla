@@ -1,11 +1,12 @@
-# 2_app_chatbot.py — robusto: MMR + límite de contexto + streaming + logs + ngrok sin secrets
-# Detecta intención (saludo/charla) para no disparar RAG en saludos.
-# Mapea variables de prompt (context/question/original_question, technical_summary, etc.)
+# 2_app_chatbot.py — robusto: MMR + límite de contexto + streaming + logs + ngrok (sin secrets)
+# - Evita RAG en saludos (detección de intención)
+# - Mapea dinámicamente variables de tus prompts (context/question/original_question, technical_summary, etc.)
+# - Detecta preguntas de “seguridad hídrica / derechos” y usa prompts RIGHTS si existen
 
 # --- PARCHE PARA SQLITE3 EN STREAMLIT CLOUD ---
-__import__('pysqlite3')
+__import__("pysqlite3")
 import sys as _sys
-_sys.modules['sqlite3'] = _sys.modules.pop('pysqlite3')
+_sys.modules["sqlite3"] = _sys.modules.pop("pysqlite3")
 # --- FIN DEL PARCHE ---
 
 import os
@@ -24,8 +25,20 @@ from langchain_ollama import OllamaLLM
 from langchain.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
-# Asegúrate de tener este archivo junto a 2_app_chatbot.py
-from prompts import EUREKA_PROMPT, EXTRACTOR_PROMPT
+# ===== Prompts =====
+# Soporta ambos casos: si el archivo prompts.py ya trae los prompts RIGHTS o no.
+try:
+    from prompts import (
+        EUREKA_PROMPT,
+        EXTRACTOR_PROMPT,
+        EUREKA_PROMPT_RIGHTS,
+        EXTRACTOR_PROMPT_RIGHTS,
+    )
+except Exception:
+    from prompts import EUREKA_PROMPT, EXTRACTOR_PROMPT  # type: ignore
+    # Fallbacks no-ops si no existen prompts RIGHTS
+    EUREKA_PROMPT_RIGHTS = EUREKA_PROMPT
+    EXTRACTOR_PROMPT_RIGHTS = EXTRACTOR_PROMPT
 
 # =====================
 # Configuración general
@@ -37,7 +50,7 @@ MODELO_LLM = os.environ.get("LLM_MODEL", "llama3.2")
 # Recuperación (MMR)
 K_GENERAL = int(os.environ.get("K_GENERAL", 3))
 K_ESPECIFICA = int(os.environ.get("K_ESPECIFICA", 5))
-FETCH_K = int(os.environ.get("FETCH_K", 20))      # candidatos antes de MMR
+FETCH_K = int(os.environ.get("FETCH_K", 20))  # candidatos antes de MMR
 MMR_LAMBDA = float(os.environ.get("MMR_LAMBDA", 0.5))  # 0=diversidad, 1=similitud
 
 # Contexto
@@ -45,6 +58,9 @@ MAX_CONTEXT_CHARS = int(os.environ.get("MAX_CONTEXT_CHARS", 12000))
 
 # Logs
 LOG_DB_PATH = os.environ.get("LOG_DB_PATH", "logs.db")
+
+# Depuración
+DEBUG_MODE = os.environ.get("DEBUG", "0") == "1"
 
 st.set_page_config(page_title="Eureka – ANLA (RAG)", page_icon="💬", layout="centered")
 
@@ -61,11 +77,13 @@ def es_pregunta_especifica(pregunta: str) -> bool:
         r"\bmunicipio\s+de\s+\w+",
         r"\bdepartamento\s+del?\s+\w+",
     ]
-    return any(re.search(p, pregunta, re.IGNORECASE) for p in patrones)
+    return any(re.search(p, pregunta or "", re.IGNORECASE) for p in patrones)
+
 
 def ajustar_parametros_busqueda(pregunta: str) -> dict:
     k = K_ESPECIFICA if es_pregunta_especifica(pregunta) else K_GENERAL
     return {"k": k, "fetch_k": FETCH_K, "lambda_mult": MMR_LAMBDA}
+
 
 def filtrar_documentos_por_relevancia(documentos, pregunta: str, es_especifica: bool):
     if es_especifica:
@@ -78,6 +96,7 @@ def filtrar_documentos_por_relevancia(documentos, pregunta: str, es_especifica: 
             docs_filtrados.append(doc)
     return docs_filtrados or documentos[:2]
 
+
 def limitar_contexto(documentos, max_chars: int) -> str:
     piezas, total = [], 0
     for i, d in enumerate(documentos, 1):
@@ -89,15 +108,21 @@ def limitar_contexto(documentos, max_chars: int) -> str:
             if restante > len(header):
                 piezas.append(header + txt[: restante - len(header)])
             break
-        piezas.append(chunk); total += len(chunk)
+        piezas.append(chunk)
+        total += len(chunk)
     return "".join(piezas).strip()
 
+
 def _safe_get_source(doc):
-    src = (doc.metadata or {}).get("source")
+    try:
+        src = (doc.metadata or {}).get("source")
+    except Exception:
+        src = None
     return src or "Fuente no encontrada"
 
+
 # ======== Clasificador de intención (no LLM) ========
-_GREET_WORDS = ["hola","holi","hello","hey","buenas","buenos días","buenas tardes","buenas noches"]
+_GREET_WORDS = ["hola", "holi", "hello", "hey", "buenas", "buenos días", "buenas tardes", "buenas noches"]
 _SMALLTALK_PAT = re.compile(r"(cómo estás|que tal|qué tal|gracias|de nada|ok|vale|bkn|listo|perfecto)", re.I)
 _QWORDS_PAT = re.compile(r"\b(qué|que|cómo|como|cuál|cual|cuándo|cuando|dónde|donde|por qué|porque|quién|quien|cuánto|cuanto)\b", re.I)
 
@@ -107,18 +132,38 @@ def clasificar_intencion(texto: str) -> str:
     if not tl:
         return "vacio"
     if any(tl.startswith(w) or w in tl for w in _GREET_WORDS):
-        # saludos breves sin signo de interrogación ni palabra interrogativa
         if "?" not in tl and not _QWORDS_PAT.search(tl) and len(tl.split()) <= 4:
             return "saludo"
     if _SMALLTALK_PAT.search(tl):
         return "charla"
-    # palabras clave del dominio ANLA
-    dom_kw = ["anla","licencia","licenciamiento","ambiental","eia","pma","permiso","resolución","audiencia",
-              "sustracción","forestal","vertimiento","ruido","emisión","mina","hidrocarburos","energía","proyecto",
-              "evaluación","impacto","autoridad","trámite","expediente"]
+    dom_kw = [
+        "anla", "licencia", "licenciamiento", "ambiental", "eia", "pma", "permiso", "resolución", "audiencia",
+        "sustracción", "forestal", "vertimiento", "ruido", "emisión", "mina", "hidrocarburos", "energía", "proyecto",
+        "evaluación", "impacto", "autoridad", "trámite", "expediente"
+    ]
     if _QWORDS_PAT.search(tl) or "?" in tl or any(k in tl for k in dom_kw):
         return "consulta"
     return "indeterminado"
+
+
+# --- Detección de preguntas con enfoque de derechos / seguridad hídrica ---
+_DER_RIGHTS_PAT = re.compile(
+    r"(derech|seguridad hídrica|embalse|captaci[oó]n|m3|m³|sequ[ií]a|verano|estiaje|caudal ecol[oó]gico|"
+    r"concesi[oó]n de agua|autoridad|audiencia p[uú]blica|participaci[oó]n|consulta previa|prioridad de usos|balance h[ií]drico)",
+    re.I,
+)
+
+def es_consulta_derechos(texto: str) -> bool:
+    return bool(_DER_RIGHTS_PAT.search(texto or ""))
+
+
+def ampliar_consulta_derechos(q: str) -> str:
+    extras = (
+        " concesión de aguas caudal ecológico seguridad hídrica estiaje participación audiencia pública "
+        "consulta previa priorización uso doméstico balance hídrico monitoreo umbrales suspensión captación PUEAA"
+    )
+    return (q or "") + extras
+
 
 # ======== Soporte ngrok/Cloudflare SIN secrets ========
 def _get_query_param(name: str) -> str:
@@ -129,6 +174,7 @@ def _get_query_param(name: str) -> str:
             return st.experimental_get_query_params().get(name, [""])[0]
         except Exception:
             return ""
+
 
 def _normalize_base_url(url: str) -> str:
     base = (url or "").strip()
@@ -141,6 +187,7 @@ def _normalize_base_url(url: str) -> str:
         raise ValueError("La URL apunta a host local. Usa la URL pública (ngrok/Cloudflare).")
     return base
 
+
 def _health_check_ollama(base: str, timeout: float = 5.0) -> Tuple[bool, str]:
     try:
         r = requests.get(f"{base}/api/tags", timeout=timeout)
@@ -149,13 +196,16 @@ def _health_check_ollama(base: str, timeout: float = 5.0) -> Tuple[bool, str]:
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"
 
+
 # =====================
 # Logging (SQLite)
 # =====================
 def init_logging_db(path: str = LOG_DB_PATH):
     try:
-        con = sqlite3.connect(path); cur = con.cursor()
-        cur.execute("""
+        con = sqlite3.connect(path)
+        cur = con.cursor()
+        cur.execute(
+            """
             CREATE TABLE IF NOT EXISTS interactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp TEXT NOT NULL,
@@ -167,40 +217,59 @@ def init_logging_db(path: str = LOG_DB_PATH):
                 scores TEXT,
                 no_docs_reason TEXT
             )
-        """)
-        con.commit(); con.close()
+            """
+        )
+        con.commit()
+        con.close()
     except Exception as e:
         st.warning(f"No se pudo inicializar la base de logs: {e}")
 
-def log_interaction(question: str, response: str, docs, scores_map=None, no_docs_reason: str | None = None):
+
+def log_interaction(
+    question: str,
+    response: str,
+    docs,
+    scores_map: Dict[str, float] | None = None,
+    no_docs_reason: str | None = None,
+):
     try:
-        con = sqlite3.connect(LOG_DB_PATH); cur = con.cursor()
+        con = sqlite3.connect(LOG_DB_PATH)
+        cur = con.cursor()
         sources = [_safe_get_source(d) for d in (docs or [])]
         doc_ids = [str((d.metadata or {}).get("id", "")) for d in (docs or [])]
-        cur.execute("""
-            INSERT INTO interactions(timestamp, question, response_preview, num_docs, doc_sources, doc_ids, scores, no_docs_reason)
+        cur.execute(
+            """
+            INSERT INTO interactions(
+                timestamp, question, response_preview, num_docs, doc_sources, doc_ids, scores, no_docs_reason
+            )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            datetime.utcnow().isoformat(),
-            question,
-            (response or "")[:1000],
-            len(docs or []),
-            json.dumps(sources, ensure_ascii=False),
-            json.dumps(doc_ids, ensure_ascii=False),
-            json.dumps(scores_map or {}, ensure_ascii=False),
-            no_docs_reason,
-        ))
-        con.commit(); con.close()
+            """,
+            (
+                datetime.utcnow().isoformat(),
+                question,
+                (response or "")[:1000],
+                len(docs or []),
+                json.dumps(sources, ensure_ascii=False),
+                json.dumps(doc_ids, ensure_ascii=False),
+                json.dumps(scores_map or {}, ensure_ascii=False),
+                no_docs_reason,
+            ),
+        )
+        con.commit()
+        con.close()
     except Exception as e:
         st.warning(f"No se pudo guardar el log: {e}")
+
 
 # =====================
 # Helpers de prompts
 # =====================
 def _ensure_prompt(tpl_or_prompt, vars_if_str: Iterable[str] | None = None):
+    """Acepta str o PromptTemplate ya construido (si es str, deja que infiera variables)."""
     if isinstance(tpl_or_prompt, str):
         return PromptTemplate(template=tpl_or_prompt)
     return tpl_or_prompt
+
 
 def _build_kwargs_for_prompt(prompt: PromptTemplate, **values: Any) -> Dict[str, Any]:
     """
@@ -216,12 +285,17 @@ def _build_kwargs_for_prompt(prompt: PromptTemplate, **values: Any) -> Dict[str,
     def pick(cands: Iterable[str], key: str):
         for c in cands:
             if c in wanted and key in values:
-                out[c] = values[key]; return
+                out[c] = values[key]
+                return
 
     pick(["context", "contexto", "context_text"], "context")
     pick(["question", "pregunta", "query", "user_question", "original_question"], "question")
-    pick(["respuesta_tecnica", "technical_answer", "answer", "summary", "respuesta", "technical_summary"], "respuesta_tecnica")
+    pick(
+        ["respuesta_tecnica", "technical_answer", "answer", "summary", "respuesta", "technical_summary"],
+        "respuesta_tecnica",
+    )
     return out
+
 
 # =====================
 # Carga de componentes IA (cacheados por base_url)
@@ -237,18 +311,38 @@ def cargar_componentes(base_url: str):
     llm_eureka_stream = OllamaLLM(model=MODELO_LLM, temperature=0.2, base_url=base_url, streaming=True)
     return embeddings, db, llm_extract, llm_eureka_stream
 
+
 @st.cache_resource(show_spinner=False)
 def construir_cadenas(llm_extract: OllamaLLM, llm_eureka_stream: OllamaLLM):
+    # Prompts estándar
     extractor_pt = _ensure_prompt(EXTRACTOR_PROMPT)
     eureka_pt = _ensure_prompt(EUREKA_PROMPT)
     extractor = extractor_pt | llm_extract | StrOutputParser()
     eureka_stream_chain = eureka_pt | llm_eureka_stream | StrOutputParser()
-    return extractor, eureka_stream_chain, extractor_pt, eureka_pt
+
+    # Prompts “enfoque derechos”
+    rights_extractor_pt = _ensure_prompt(EXTRACTOR_PROMPT_RIGHTS)
+    rights_eureka_pt = _ensure_prompt(EUREKA_PROMPT_RIGHTS)
+    extractor_rights = rights_extractor_pt | llm_extract | StrOutputParser()
+    eureka_rights_stream = rights_eureka_pt | llm_eureka_stream | StrOutputParser()
+
+    return (
+        extractor,
+        eureka_stream_chain,
+        extractor_pt,
+        eureka_pt,
+        extractor_rights,
+        eureka_rights_stream,
+        rights_extractor_pt,
+        rights_eureka_pt,
+    )
+
 
 def crear_retriever(db: Chroma, pregunta: str):
     params = ajustar_parametros_busqueda(pregunta)
     retriever = db.as_retriever(search_type="mmr", search_kwargs=params)
     return retriever, params
+
 
 def contar_indice(db: Chroma) -> int:
     try:
@@ -261,6 +355,7 @@ def contar_indice(db: Chroma) -> int:
         return 1 if res else 0
     except Exception:
         return 0
+
 
 # =====================
 # UI
@@ -309,7 +404,7 @@ with st.sidebar:
     if "ollama_base" in st.session_state:
         st.caption(f"Usando: `{st.session_state['ollama_base']}`")
 
-# ---- Estado inicial (sin conexión): instrucción y detener el resto ----
+# ---- Estado inicial (sin conexión): mostrar instrucción y detener el resto ----
 if "ollama_base" not in st.session_state:
     st.info(
         "💡 Para empezar, pega en la **barra lateral** la URL pública de tu túnel "
@@ -325,7 +420,16 @@ except Exception as e:
     st.error(f"❌ No se pudo conectar con Ollama: {e}")
     st.stop()
 
-extractor_chain, eureka_stream_chain, extractor_pt, eureka_pt = construir_cadenas(llm_extract, llm_eureka_stream)
+(
+    extractor_chain,
+    eureka_stream_chain,
+    extractor_pt,
+    eureka_pt,
+    extractor_chain_rights,
+    eureka_stream_chain_rights,
+    extractor_pt_rights,
+    eureka_pt_rights,
+) = construir_cadenas(llm_extract, llm_eureka_stream)
 
 indice_docs = contar_indice(db)
 if indice_docs == 0:
@@ -345,7 +449,7 @@ if user_q:
     with st.chat_message("user"):
         st.markdown(user_q)
 
-    # === Gating por intención: evita RAG con saludos/charla ===
+    # Gating por intención: evita RAG con saludos/charla
     intent = clasificar_intencion(user_q)
     if intent in ("saludo", "charla", "indeterminado", "vacio"):
         sugerencias = (
@@ -365,14 +469,20 @@ if user_q:
     with st.chat_message("assistant"):
         with st.spinner("Buscando en la base, extrayendo y explicando en lenguaje claro…"):
             try:
+                # Modo derechos + expansión de consulta
+                modo_derechos = es_consulta_derechos(user_q)
+                consulta_busqueda = ampliar_consulta_derechos(user_q) if modo_derechos else user_q
+
                 retriever, params = crear_retriever(db, user_q)
-                docs_raw = retriever.invoke(user_q)
+                docs_raw = retriever.invoke(consulta_busqueda)
                 es_esp = es_pregunta_especifica(user_q)
                 docs = filtrar_documentos_por_relevancia(docs_raw, user_q, es_esp)
 
                 if not docs:
-                    no_docs_reason = "Índice vacío (0 docs)" if indice_docs == 0 else \
-                                     "Sin resultados (consulta fuera de dominio o parámetros muy estrictos)"
+                    no_docs_reason = (
+                        "Índice vacío (0 docs)" if indice_docs == 0 else
+                        "Sin resultados (consulta fuera de dominio o parámetros muy estrictos)"
+                    )
                     st.info(
                         f"""**No encontré documentos relevantes.**
 
@@ -383,25 +493,38 @@ if user_q:
                     log_interaction(user_q, response="", docs=[], scores_map={}, no_docs_reason=no_docs_reason)
                     st.stop()
 
+                # Limitar tamaño del contexto
                 contexto = limitar_contexto(docs, MAX_CONTEXT_CHARS)
 
-                # Paso 1: respuesta técnica — adapta variables del EXTRACTOR
-                extractor_kwargs = _build_kwargs_for_prompt(
-                    extractor_pt,
-                    context=contexto,    # 'context'/'contexto'
-                    question=user_q,     # 'question'/'pregunta'/'original_question'
-                )
-                resp_tecnica = extractor_chain.invoke(extractor_kwargs)
+                # Selección de cadenas según modo
+                if modo_derechos:
+                    extractor_sel = extractor_chain_rights
+                    eureka_sel = eureka_stream_chain_rights
+                    extractor_pt_sel = extractor_pt_rights
+                    eureka_pt_sel = eureka_pt_rights
+                else:
+                    extractor_sel = extractor_chain
+                    eureka_sel = eureka_stream_chain
+                    extractor_pt_sel = extractor_pt
+                    eureka_pt_sel = eureka_pt
 
-                # Paso 2: explicación en lenguaje claro — STREAMING — adapta variables del EUREKA
+                # Paso 1: respuesta técnica (adaptando variables del prompt)
+                extractor_kwargs = _build_kwargs_for_prompt(
+                    extractor_pt_sel,
+                    context=contexto,   # 'context'/'contexto'
+                    question=user_q,    # 'question'/'pregunta'/'original_question'
+                )
+                resp_tecnica = extractor_sel.invoke(extractor_kwargs)
+
+                # Paso 2: explicación en lenguaje claro — STREAMING
                 eureka_kwargs = _build_kwargs_for_prompt(
-                    eureka_pt,
+                    eureka_pt_sel,
                     respuesta_tecnica=resp_tecnica,  # 'technical_summary'/'respuesta_tecnica'
                     question=user_q,                 # 'original_question'/'question'
                 )
                 contenedor = st.empty()
                 acumulado = ""
-                for chunk in eureka_stream_chain.stream(eureka_kwargs):
+                for chunk in eureka_sel.stream(eureka_kwargs):
                     acumulado += chunk
                     contenedor.markdown(acumulado)
                 respuesta_final = acumulado
@@ -414,15 +537,18 @@ if user_q:
 
                 st.session_state.messages.append({"role": "assistant", "content": respuesta_final})
 
-                # Debug
-                with st.expander("Ver información de depuración"):
-                    st.write(f"**Tipo de pregunta:** {'específica' if es_esp else 'general'}")
-                    st.write(f"**Parámetros MMR:** {params}")
-                    st.write(f"**Documentos recuperados:** {len(docs)}")
-                    try:
-                        st.json([d.dict() for d in docs])
-                    except Exception:
-                        st.write("No fue posible mostrar detalle de docs.")
+                # Debug opcional
+                if DEBUG_MODE:
+                    with st.expander("Ver información de depuración"):
+                        st.write(f"**Intención:** {intent}")
+                        st.write(f"**Modo derechos:** {modo_derechos}")
+                        st.write(f"**Consulta expandida:** {consulta_busqueda}")
+                        st.write(f"**Parámetros MMR:** {params}")
+                        st.write(f"**Documentos recuperados:** {len(docs)}")
+                        try:
+                            st.json([d.dict() for d in docs])
+                        except Exception:
+                            st.write("No fue posible mostrar detalle de docs.")
 
                 # Logs con scores
                 scores_map: Dict[str, float] = {}
