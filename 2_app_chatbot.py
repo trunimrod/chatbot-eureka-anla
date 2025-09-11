@@ -1,4 +1,4 @@
-# 2_app_chatbot.py (Versión Mejorada - Sin Filtración de Información Específica)
+# 2_app_chatbot.py (Versión Final Corregida - Sin score_threshold)
 
 # --- PARCHE PARA SQLITE3 EN STREAMLIT CLOUD ---
 # Carga una versión compatible de SQLite3 antes de que chromadb la necesite.
@@ -45,11 +45,35 @@ def es_pregunta_especifica(pregunta):
 def ajustar_parametros_busqueda(pregunta):
     """
     Ajusta los parámetros de búsqueda según si la pregunta es específica o general.
+    Solo usa 'k' ya que ChromaDB no soporta score_threshold en el retriever.
     """
     if es_pregunta_especifica(pregunta):
-        return {"k": 5, "score_threshold": 0.6}  # Más documentos para preguntas específicas
+        return {"k": 5}  # Más documentos para preguntas específicas
     else:
-        return {"k": 3, "score_threshold": 0.7}  # Menos documentos, más selectivos para preguntas generales
+        return {"k": 3}  # Menos documentos para preguntas generales
+
+def filtrar_documentos_por_relevancia(documentos, pregunta, es_especifica):
+    """
+    Filtro adicional de documentos basado en relevancia para evitar ruido.
+    Para preguntas generales, es más estricto.
+    """
+    if not documentos:
+        return documentos
+    
+    if not es_especifica:
+        # Para preguntas generales, filtrar documentos que contengan demasiados nombres propios
+        documentos_filtrados = []
+        for doc in documentos:
+            # Contar nombres propios y términos muy específicos
+            nombres_propios = len(re.findall(r'\b[A-Z][a-záéíóúüñç]+(?:\s+[A-Z][a-záéíóúüñç]+)*\b', doc.page_content))
+            # Si tiene menos de 4 nombres propios, es más probable que sea información general
+            if nombres_propios < 4:
+                documentos_filtrados.append(doc)
+        
+        # Si el filtrado dejó muy pocos documentos, devolver al menos los 2 primeros originales
+        return documentos_filtrados if len(documentos_filtrados) >= 1 else documentos[:2]
+    
+    return documentos
 
 # --- CADENA DE CONVERSACIÓN DE DOS PASOS MEJORADA ---
 @st.cache_resource
