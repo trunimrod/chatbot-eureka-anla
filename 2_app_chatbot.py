@@ -64,16 +64,23 @@ def construir_cadena_completa():
             params = ajustar_parametros_busqueda(pregunta)
             return db.as_retriever(search_kwargs=params)
 
-        # Cadena extractora con retriever dinámico
+        # Cadena extractora con retriever dinámico y filtrado
         def cadena_extractora_dinamica(pregunta):
             retriever = crear_retriever_dinamico(pregunta)
-            cadena = (
-                {"context": retriever, "question": RunnablePassthrough()}
-                | EXTRACTOR_PROMPT
-                | llm
-                | StrOutputParser()
-            )
-            return cadena.invoke(pregunta), retriever.invoke(pregunta)
+            documentos_raw = retriever.invoke(pregunta)
+            
+            # Aplicar filtrado adicional para preguntas generales
+            es_especifica = es_pregunta_especifica(pregunta)
+            documentos_filtrados = filtrar_documentos_por_relevancia(documentos_raw, pregunta, es_especifica)
+            
+            # Crear contexto manualmente con los documentos filtrados
+            contexto = "\n\n".join([doc.page_content for doc in documentos_filtrados])
+            
+            # Procesar con el prompt del extractor
+            cadena = EXTRACTOR_PROMPT | llm | StrOutputParser()
+            resumen_tecnico = cadena.invoke({"context": contexto, "question": pregunta})
+            
+            return resumen_tecnico, documentos_filtrados
 
         def cadena_completa(pregunta):
             resumen_tecnico, documentos = cadena_extractora_dinamica(pregunta)
