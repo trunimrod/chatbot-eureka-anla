@@ -1,4 +1,4 @@
-# 2_app_chatbot.py (Versión Final con Parche para Despliegue)
+# 2_app_chatbot.py (Versión Mejorada - Sin Filtración de Información Específica)
 
 # --- PARCHE PARA SQLITE3 EN STREAMLIT CLOUD ---
 # Carga una versión compatible de SQLite3 antes de que chromadb la necesite.
@@ -8,6 +8,7 @@ sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 # --- FIN DEL PARCHE ---
 
 import streamlit as st
+import re
 from langchain_chroma import Chroma
 from langchain_ollama.embeddings import OllamaEmbeddings
 from langchain_ollama import OllamaLLM
@@ -15,7 +16,7 @@ from langchain.prompts import PromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 
-# Importar los dos prompts
+# Importar los dos prompts mejorados
 from prompts import EUREKA_PROMPT, EXTRACTOR_PROMPT
 
 # --- Configuración ---
@@ -24,33 +25,74 @@ MODELO_EMBEDDING = "nomic-embed-text"
 MODELO_LLM = "llama3.2"
 OLLAMA_HOST = "https://6682052ab53b.ngrok-free.app" # Reemplaza con tu URL de ngrok para despliegue
 
-# --- CADENA DE CONVERSACIÓN DE DOS PASOS ---
+# --- FUNCIONES AUXILIARES ---
+def es_pregunta_especifica(pregunta):
+    """
+    Detecta si la pregunta menciona nombres específicos de proyectos, lugares, empresas, etc.
+    Esto ayuda a ajustar los parámetros de búsqueda y procesamiento.
+    """
+    patrones_especificos = [
+        r'\b[A-Z][a-záéíóúüñç]+(?:\s+[A-Z][a-záéíóúüñç]+)*\b',  # Nombres propios
+        r'\bembalse\s+del?\s+\w+',  # "embalse del X"
+        r'\bproyecto\s+\w+',  # "proyecto X"
+        r'\bempresa\s+\w+',  # "empresa X"
+        r'\b\w+\s+S\.?A\.?S?\.?',  # Empresas con razón social
+        r'\bmunicipio\s+de\s+\w+',  # "municipio de X"
+        r'\bdepartamento\s+del?\s+\w+',  # "departamento de/del X"
+    ]
+    return any(re.search(patron, pregunta, re.IGNORECASE) for patron in patrones_especificos)
+
+def ajustar_parametros_busqueda(pregunta):
+    """
+    Ajusta los parámetros de búsqueda según si la pregunta es específica o general.
+    """
+    if es_pregunta_especifica(pregunta):
+        return {"k": 5, "score_threshold": 0.6}  # Más documentos para preguntas específicas
+    else:
+        return {"k": 3, "score_threshold": 0.7}  # Menos documentos, más selectivos para preguntas generales
+
+# --- CADENA DE CONVERSACIÓN DE DOS PASOS MEJORADA ---
 @st.cache_resource
 def construir_cadena_completa():
     try:
         embeddings = OllamaEmbeddings(model=MODELO_EMBEDDING, base_url=OLLAMA_HOST)
         db = Chroma(persist_directory=DIRECTORIO_CHROMA_DB, embedding_function=embeddings)
         llm = OllamaLLM(model=MODELO_LLM, temperature=0.2, base_url=OLLAMA_HOST)
-        retriever = db.as_retriever(search_kwargs={"k": 5})
+        
+        # Función para crear retriever dinámico según la pregunta
+        def crear_retriever_dinamico(pregunta):
+            params = ajustar_parametros_busqueda(pregunta)
+            return db.as_retriever(search_kwargs=params)
 
-        cadena_extractora = (
-            {"context": retriever, "question": RunnablePassthrough()}
-            | EXTRACTOR_PROMPT
-            | llm
-            | StrOutputParser()
-        )
+        # Cadena extractora con retriever dinámico
+        def cadena_extractora_dinamica(pregunta):
+            retriever = crear_retriever_dinamico(pregunta)
+            cadena = (
+                {"context": retriever, "question": RunnablePassthrough()}
+                | EXTRACTOR_PROMPT
+                | llm
+                | StrOutputParser()
+            )
+            return cadena.invoke(pregunta), retriever.invoke(pregunta)
 
-        cadena_traductora = (
-            {"technical_summary": cadena_extractora, "original_question": RunnablePassthrough()}
-            | EUREKA_PROMPT
-            | llm
-            | StrOutputParser()
-        )
-        return cadena_traductora, retriever
+        def cadena_completa(pregunta):
+            resumen_tecnico, documentos = cadena_extractora_dinamica(pregunta)
+            
+            cadena_traductora = (
+                {"technical_summary": lambda x: resumen_tecnico, "original_question": RunnablePassthrough()}
+                | EUREKA_PROMPT
+                | llm
+                | StrOutputParser()
+            )
+            
+            respuesta_final = cadena_traductora.invoke(pregunta)
+            return respuesta_final, documentos
+
+        return cadena_completa
         
     except Exception as e:
         st.error(f"Error al construir las cadenas de IA: {e}")
-        return None, None
+        return None
 
 # --- Interfaz de Usuario ---
 st.set_page_config(page_title="Chatbot Eureka - ANLA", page_icon="https://www.anla.gov.co/07rediseureka2024/images/planeureka/logo-eureka-2.0.png")
@@ -68,10 +110,10 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-cadena_final, retriever = construir_cadena_completa()
+cadena_final = construir_cadena_completa()
 
 if prompt := st.chat_input("Ej: ¿Cuáles son mis derechos si un proyecto me afecta?"):
-    if cadena_final and retriever:
+    if cadena_final:
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
@@ -79,13 +121,15 @@ if prompt := st.chat_input("Ej: ¿Cuáles son mis derechos si un proyecto me afe
         with st.chat_message("assistant"):
             with st.spinner("Entendiendo tu pregunta, buscando y traduciendo a lenguaje claro..."):
                 try:
-                    resumen_conversacional = cadena_final.invoke(prompt)
+                    # Mostrar información de depuración sobre el tipo de pregunta
+                    tipo_pregunta = "específica" if es_pregunta_especifica(prompt) else "general"
+                    params = ajustar_parametros_busqueda(prompt)
                     
-                    documentos_fuente = retriever.invoke(prompt)
+                    respuesta_final, documentos_fuente = cadena_final(prompt)
+                    
                     fuentes = {doc.metadata['source'] for doc in documentos_fuente if 'source' in doc.metadata and doc.metadata['source'] != 'Fuente no encontrada'}
                     
-                    respuesta_final = resumen_conversacional
-                    if fuentes and "No he encontrado información" not in resumen_conversacional:
+                    if fuentes and "No he encontrado información" not in respuesta_final:
                          respuesta_final += "\n\n--- \n**Fuentes Consultadas:**\n"
                          for url in sorted(list(fuentes)):
                              respuesta_final += f"- {url}\n"
@@ -93,7 +137,10 @@ if prompt := st.chat_input("Ej: ¿Cuáles son mis derechos si un proyecto me afe
                     st.markdown(respuesta_final)
                     st.session_state.messages.append({"role": "assistant", "content": respuesta_final})
 
-                    with st.expander("Ver contexto recuperado (para depuración)"):
+                    with st.expander("Ver información de depuración"):
+                        st.write(f"**Tipo de pregunta detectado:** {tipo_pregunta}")
+                        st.write(f"**Parámetros de búsqueda:** {params}")
+                        st.write(f"**Documentos recuperados:** {len(documentos_fuente)}")
                         st.json([doc.dict() for doc in documentos_fuente])
 
                 except Exception as e:
