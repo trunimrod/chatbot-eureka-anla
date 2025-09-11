@@ -1,180 +1,328 @@
-# 2_app_chatbot.py (Versión Final Corregida - Sin score_threshold)
+# 2_app_chatbot.py — con mejoras: MMR + límite de contexto + streaming + logs SQLite
 
 # --- PARCHE PARA SQLITE3 EN STREAMLIT CLOUD ---
 # Carga una versión compatible de SQLite3 antes de que chromadb la necesite.
 __import__('pysqlite3')
-import sys
-sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+import sys as _sys
+_sys.modules['sqlite3'] = _sys.modules.pop('pysqlite3')
 # --- FIN DEL PARCHE ---
 
-import streamlit as st
+import os
 import re
+import json
+import time
+import sqlite3
+from datetime import datetime
+
+import streamlit as st
 from langchain_chroma import Chroma
 from langchain_ollama.embeddings import OllamaEmbeddings
 from langchain_ollama import OllamaLLM
 from langchain.prompts import PromptTemplate
-from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 
-# Importar los dos prompts mejorados
+# Prompts existentes
 from prompts import EUREKA_PROMPT, EXTRACTOR_PROMPT
 
-# --- Configuración ---
-DIRECTORIO_CHROMA_DB = "chroma_db"
-MODELO_EMBEDDING = "nomic-embed-text"
-MODELO_LLM = "llama3.2"
-OLLAMA_HOST = "https://6682052ab53b.ngrok-free.app" # Reemplaza con tu URL de ngrok para despliegue
+# =====================
+# Configuración general
+# =====================
+DIRECTORIO_CHROMA_DB = os.environ.get("CHROMA_DB_DIR", "chroma_db")
+MODELO_EMBEDDING = os.environ.get("EMBED_MODEL", "nomic-embed-text")
+MODELO_LLM = os.environ.get("LLM_MODEL", "llama3.2")
+OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 
-# --- FUNCIONES AUXILIARES ---
-def es_pregunta_especifica(pregunta):
-    """
-    Detecta si la pregunta menciona nombres específicos de proyectos, lugares, empresas, etc.
-    Esto ayuda a ajustar los parámetros de búsqueda y procesamiento.
-    """
+# Recuperación (MMR)
+K_GENERAL = int(os.environ.get("K_GENERAL", 3))
+K_ESPECIFICA = int(os.environ.get("K_ESPECIFICA", 5))
+FETCH_K = int(os.environ.get("FETCH_K", 20))  # candidatos antes de MMR
+MMR_LAMBDA = float(os.environ.get("MMR_LAMBDA", 0.5))  # 0=diversidad, 1=similitud
+
+# Contexto: limitar tamaño total concatenado
+MAX_CONTEXT_CHARS = int(os.environ.get("MAX_CONTEXT_CHARS", 12000))
+
+# Logs
+LOG_DB_PATH = os.environ.get("LOG_DB_PATH", "logs.db")
+
+st.set_page_config(page_title="Eureka – ANLA (RAG)", page_icon="💬", layout="centered")
+
+# =====================
+# Utilidades
+# =====================
+
+def es_pregunta_especifica(pregunta: str) -> bool:
+    """Heurística simple para detectar especificidad (proyecto/empresa/lugar)."""
     patrones_especificos = [
-        r'\b[A-Z][a-záéíóúüñç]+(?:\s+[A-Z][a-záéíóúüñç]+)*\b',  # Nombres propios
-        r'\bembalse\s+del?\s+\w+',  # "embalse del X"
-        r'\bproyecto\s+\w+',  # "proyecto X"
-        r'\bempresa\s+\w+',  # "empresa X"
-        r'\b\w+\s+S\.?A\.?S?\.?',  # Empresas con razón social
-        r'\bmunicipio\s+de\s+\w+',  # "municipio de X"
-        r'\bdepartamento\s+del?\s+\w+',  # "departamento de/del X"
+        r"\b[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]+(?:\s+[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]+)*\b",  # nombres propios
+        r"\bembalse\s+del?\s+\w+",
+        r"\bproyecto\s+\w+",
+        r"\bempresa\s+\w+",
+        r"\b\w+\s+S\.?A\.?S?\.?",  # razón social
+        r"\bmunicipio\s+de\s+\w+",
+        r"\bdepartamento\s+del?\s+\w+",
     ]
-    return any(re.search(patron, pregunta, re.IGNORECASE) for patron in patrones_especificos)
+    return any(re.search(p, pregunta, re.IGNORECASE) for p in patrones_especificos)
 
-def ajustar_parametros_busqueda(pregunta):
-    """
-    Ajusta los parámetros de búsqueda según si la pregunta es específica o general.
-    Solo usa 'k' ya que ChromaDB no soporta score_threshold en el retriever.
-    """
-    if es_pregunta_especifica(pregunta):
-        return {"k": 5}  # Más documentos para preguntas específicas
-    else:
-        return {"k": 3}  # Menos documentos para preguntas generales
 
-def filtrar_documentos_por_relevancia(documentos, pregunta, es_especifica):
-    """
-    Filtro adicional de documentos basado en relevancia para evitar ruido.
-    Para preguntas generales, es más estricto.
-    """
-    if not documentos:
+def ajustar_parametros_busqueda(pregunta: str) -> dict:
+    """Devuelve kwargs para as_retriever() con MMR y k dinámico."""
+    k = K_ESPECIFICA if es_pregunta_especifica(pregunta) else K_GENERAL
+    return {
+        "k": k,
+        "fetch_k": FETCH_K,
+        "lambda_mult": MMR_LAMBDA,
+    }
+
+
+def filtrar_documentos_por_relevancia(documentos, pregunta: str, es_especifica: bool):
+    """Para preguntas generales, evita docs con demasiados nombres propios (>3)."""
+    if es_especifica:
         return documentos
-    
-    if not es_especifica:
-        # Para preguntas generales, filtrar documentos que contengan demasiados nombres propios
-        documentos_filtrados = []
-        for doc in documentos:
-            # Contar nombres propios y términos muy específicos
-            nombres_propios = len(re.findall(r'\b[A-Z][a-záéíóúüñç]+(?:\s+[A-Z][a-záéíóúüñç]+)*\b', doc.page_content))
-            # Si tiene menos de 4 nombres propios, es más probable que sea información general
-            if nombres_propios < 4:
-                documentos_filtrados.append(doc)
-        
-        # Si el filtrado dejó muy pocos documentos, devolver al menos los 2 primeros originales
-        return documentos_filtrados if len(documentos_filtrados) >= 1 else documentos[:2]
-    
-    return documentos
+    docs_filtrados = []
+    patron_np = re.compile(r"\b[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]+(?:\s+[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]+)*\b")
+    for doc in documentos:
+        contenido = doc.page_content or ""
+        nombres_propios = len(patron_np.findall(contenido))
+        if nombres_propios <= 3:
+            docs_filtrados.append(doc)
+    if not docs_filtrados:
+        # en caso extremo, conserva al menos los 2 primeros
+        return documentos[:2]
+    return docs_filtrados
 
-# --- CADENA DE CONVERSACIÓN DE DOS PASOS MEJORADA ---
-@st.cache_resource
-def construir_cadena_completa():
+
+def limitar_contexto(documentos, max_chars: int) -> str:
+    """Concatena contenidos hasta max_chars para acotar el tamaño del prompt."""
+    piezas = []
+    total = 0
+    for i, d in enumerate(documentos, 1):
+        txt = (d.page_content or "").strip()
+        header = f"\n\n[DOC {i}]\n"
+        chunk = header + txt
+        if total + len(chunk) > max_chars:
+            # corta el último pedazo si aún no hemos añadido nada
+            restante = max_chars - total
+            if restante > len(header):
+                piezas.append(header + txt[: restante - len(header)])
+            break
+        piezas.append(chunk)
+        total += len(chunk)
+    return "".join(piezas).strip()
+
+
+def _safe_get_source(doc):
+    src = (doc.metadata or {}).get("source")
+    return src or "Fuente no encontrada"
+
+# =====================
+# Logging (SQLite)
+# =====================
+
+def init_logging_db(path: str = LOG_DB_PATH):
     try:
-        embeddings = OllamaEmbeddings(model=MODELO_EMBEDDING, base_url=OLLAMA_HOST)
-        db = Chroma(persist_directory=DIRECTORIO_CHROMA_DB, embedding_function=embeddings)
-        llm = OllamaLLM(model=MODELO_LLM, temperature=0.2, base_url=OLLAMA_HOST)
-        
-        # Función para crear retriever dinámico según la pregunta
-        def crear_retriever_dinamico(pregunta):
-            params = ajustar_parametros_busqueda(pregunta)
-            return db.as_retriever(search_kwargs=params)
-
-        # Cadena extractora con retriever dinámico y filtrado
-        def cadena_extractora_dinamica(pregunta):
-            retriever = crear_retriever_dinamico(pregunta)
-            documentos_raw = retriever.invoke(pregunta)
-            
-            # Aplicar filtrado adicional para preguntas generales
-            es_especifica = es_pregunta_especifica(pregunta)
-            documentos_filtrados = filtrar_documentos_por_relevancia(documentos_raw, pregunta, es_especifica)
-            
-            # Crear contexto manualmente con los documentos filtrados
-            contexto = "\n\n".join([doc.page_content for doc in documentos_filtrados])
-            
-            # Procesar con el prompt del extractor
-            cadena = EXTRACTOR_PROMPT | llm | StrOutputParser()
-            resumen_tecnico = cadena.invoke({"context": contexto, "question": pregunta})
-            
-            return resumen_tecnico, documentos_filtrados
-
-        def cadena_completa(pregunta):
-            resumen_tecnico, documentos = cadena_extractora_dinamica(pregunta)
-            
-            cadena_traductora = (
-                {"technical_summary": lambda x: resumen_tecnico, "original_question": RunnablePassthrough()}
-                | EUREKA_PROMPT
-                | llm
-                | StrOutputParser()
+        con = sqlite3.connect(path)
+        cur = con.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS interactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                question TEXT,
+                response_preview TEXT,
+                num_docs INTEGER,
+                doc_sources TEXT,
+                doc_ids TEXT,
+                scores TEXT,
+                no_docs_reason TEXT
             )
-            
-            respuesta_final = cadena_traductora.invoke(pregunta)
-            return respuesta_final, documentos
-
-        return cadena_completa
-        
+            """
+        )
+        con.commit()
+        con.close()
     except Exception as e:
-        st.error(f"Error al construir las cadenas de IA: {e}")
-        return None
+        st.warning(f"No se pudo inicializar la base de logs: {e}")
 
-# --- Interfaz de Usuario ---
-st.set_page_config(page_title="Chatbot Eureka - ANLA", page_icon="https://www.anla.gov.co/07rediseureka2024/images/planeureka/logo-eureka-2.0.png")
-col1, col2 = st.columns(2)
-with col1: st.image("https://www.anla.gov.co/images/logos/herramientas/entidad/logo-anla-2024-ph1.png", width=200)
-with col2: st.image("https://www.anla.gov.co/07rediseureka2024/images/planeureka/logo-eureka-2.0.png", width=200)
-st.title("Chatbot Eureka")
-st.caption("Te ayudo a comprender tus derechos y deberes ambientales.")
-st.divider()
+
+def log_interaction(question: str, response: str, docs, scores_map=None, no_docs_reason: str | None = None):
+    try:
+        con = sqlite3.connect(LOG_DB_PATH)
+        cur = con.cursor()
+        sources = [_safe_get_source(d) for d in (docs or [])]
+        doc_ids = [str((d.metadata or {}).get("id", "")) for d in (docs or [])]
+        scores_map = scores_map or {}
+        cur.execute(
+            """
+            INSERT INTO interactions(timestamp, question, response_preview, num_docs, doc_sources, doc_ids, scores, no_docs_reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                datetime.utcnow().isoformat(),
+                question,
+                (response or "")[:1000],
+                len(docs or []),
+                json.dumps(sources, ensure_ascii=False),
+                json.dumps(doc_ids, ensure_ascii=False),
+                json.dumps(scores_map, ensure_ascii=False),
+                no_docs_reason,
+            ),
+        )
+        con.commit()
+        con.close()
+    except Exception as e:
+        st.warning(f"No se pudo guardar el log: {e}")
+
+# =====================
+# Carga de componentes IA
+# =====================
+@st.cache_resource(show_spinner=False)
+def cargar_componentes():
+    embeddings = OllamaEmbeddings(model=MODELO_EMBEDDING, base_url=OLLAMA_HOST)
+    db = Chroma(persist_directory=DIRECTORIO_CHROMA_DB, embedding_function=embeddings)
+    llm_extract = OllamaLLM(model=MODELO_LLM, temperature=0.2, base_url=OLLAMA_HOST)
+    # LLM con streaming habilitado para la etapa EUREKA
+    llm_eureka_stream = OllamaLLM(model=MODELO_LLM, temperature=0.2, base_url=OLLAMA_HOST, streaming=True)
+    return embeddings, db, llm_extract, llm_eureka_stream
+
+
+@st.cache_resource(show_spinner=False)
+def construir_cadenas(llm_extract: OllamaLLM, llm_eureka_stream: OllamaLLM):
+    extractor = PromptTemplate(
+        template=EXTRACTOR_PROMPT,
+        input_variables=["contexto", "pregunta"],
+    ) | llm_extract | StrOutputParser()
+
+    eureka_stream_chain = PromptTemplate(
+        template=EUREKA_PROMPT,
+        input_variables=["respuesta_tecnica"],
+    ) | llm_eureka_stream | StrOutputParser()
+
+    return extractor, eureka_stream_chain
+
+
+def crear_retriever(db: Chroma, pregunta: str):
+    params = ajustar_parametros_busqueda(pregunta)
+    retriever = db.as_retriever(search_type="mmr", search_kwargs=params)
+    return retriever, params
+
+
+def contar_indice(db: Chroma) -> int:
+    try:
+        # Acceso interno a la colección subyacente
+        if hasattr(db, "_collection") and db._collection is not None:
+            return int(db._collection.count())
+    except Exception:
+        pass
+    # Fallback: intenta una búsqueda con k=1
+    try:
+        res = db.similarity_search("prueba", k=1)
+        return 1 if res else 0
+    except Exception:
+        return 0
+
+
+# =====================
+# UI y estado
+# =====================
+st.title("Eureka – ANLA · Asistente ciudadano")
+st.caption("Chat RAG con fuentes verificables. Ahora con MMR, streaming y auditoría.")
 
 if "messages" not in st.session_state:
-    st.session_state.messages = [{"role": "assistant", "content": "Hola, soy Eureka. Estoy aquí para ayudarte a entender la información ambiental y cómo puedes participar en las decisiones que te afectan. ¿En qué puedo ayudarte hoy?"}]
+    st.session_state.messages = []
 
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+init_logging_db()
+embeddings, db, llm_extract, llm_eureka_stream = cargar_componentes()
+extractor_chain, eureka_stream_chain = construir_cadenas(llm_extract, llm_eureka_stream)
 
-cadena_final = construir_cadena_completa()
+indice_docs = contar_indice(db)
+if indice_docs == 0:
+    st.warning("No encuentro documentos en el índice (Chroma). Carga/adjunta el `chroma_db` o re-indexa antes de usar el chat.")
 
-if prompt := st.chat_input("Ej: ¿Cuáles son mis derechos si un proyecto me afecta?"):
-    if cadena_final:
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
 
-        with st.chat_message("assistant"):
-            with st.spinner("Entendiendo tu pregunta, buscando y traduciendo a lenguaje claro..."):
+user_q = st.chat_input("Escribe tu pregunta…")
+if user_q:
+    st.session_state.messages.append({"role": "user", "content": user_q})
+    with st.chat_message("user"):
+        st.markdown(user_q)
+
+    with st.chat_message("assistant"):
+        with st.spinner("Buscando en la base, extrayendo y explicando en lenguaje claro…"):
+            no_docs_reason = None
+            try:
+                retriever, params = crear_retriever(db, user_q)
+                docs_raw = retriever.invoke(user_q)
+                es_esp = es_pregunta_especifica(user_q)
+                docs = filtrar_documentos_por_relevancia(docs_raw, user_q, es_esp)
+
+                if not docs:
+                    if indice_docs == 0:
+                        no_docs_reason = "Índice vacío (0 documentos en Chroma)"
+                    else:
+                        no_docs_reason = "El retriever no devolvió resultados (consulta fuera de dominio o parámetros muy restrictivos)"
+                    st.info(
+                        """**No encontré documentos relevantes.**
+                        
+                        *Motivo:* {motivo}
+                        
+                        *Sugerencias:* verifica que el índice `chroma_db` esté disponible y que tu pregunta esté relacionada con los temas del repositorio de documentos.
+                        """.format(motivo=no_docs_reason)
+                    )
+                    log_interaction(user_q, response="", docs=[], scores_map={}, no_docs_reason=no_docs_reason)
+                    raise st.StopException
+
+                # Limitar tamaño del contexto
+                contexto = limitar_contexto(docs, MAX_CONTEXT_CHARS)
+
+                # Paso 1: respuesta técnica (no se streamea)
+                resp_tecnica = extractor_chain.invoke({
+                    "contexto": contexto,
+                    "pregunta": user_q,
+                })
+
+                # Paso 2: explicación en lenguaje claro — STREAMING
+                contenedor = st.empty()
+                acumulado = ""
+                for chunk in eureka_stream_chain.stream({"respuesta_tecnica": resp_tecnica}):
+                    acumulado += chunk
+                    contenedor.markdown(acumulado)
+                respuesta_final = acumulado
+
+                # Fuentes
+                fuentes = sorted({
+                    _safe_get_source(d) for d in docs if _safe_get_source(d) != "Fuente no encontrada"
+                })
+                if fuentes and "No he encontrado información" not in respuesta_final:
+                    respuesta_final += "\n\n---\n**Fuentes consultadas:**\n" + "\n".join(f"- {u}" for u in fuentes)
+                    contenedor.markdown(respuesta_final)
+
+                st.session_state.messages.append({"role": "assistant", "content": respuesta_final})
+
+                # Debug
+                with st.expander("Ver información de depuración"):
+                    st.write(f"**Tipo de pregunta detectado:** {'específica' if es_esp else 'general'}")
+                    st.write(f"**Parámetros de búsqueda (MMR):** {params}")
+                    st.write(f"**Documentos recuperados:** {len(docs)}")
+                    try:
+                        st.json([d.dict() for d in docs])
+                    except Exception:
+                        st.write("No fue posible mostrar el detalle de los documentos.")
+
+                # Log: además de las fuentes, intenta obtener 'scores' por similitud clásica (para auditoría)
+                scores_map = {}
                 try:
-                    # Mostrar información de depuración sobre el tipo de pregunta
-                    tipo_pregunta = "específica" if es_pregunta_especifica(prompt) else "general"
-                    params = ajustar_parametros_busqueda(prompt)
-                    
-                    respuesta_final, documentos_fuente = cadena_final(prompt)
-                    
-                    fuentes = {doc.metadata['source'] for doc in documentos_fuente if 'source' in doc.metadata and doc.metadata['source'] != 'Fuente no encontrada'}
-                    
-                    if fuentes and "No he encontrado información" not in respuesta_final:
-                         respuesta_final += "\n\n--- \n**Fuentes Consultadas:**\n"
-                         for url in sorted(list(fuentes)):
-                             respuesta_final += f"- {url}\n"
+                    sim_pairs = db.similarity_search_with_score(user_q, k=params.get("k", 3))
+                    # mapear por source -> score
+                    for d, s in sim_pairs:
+                        src = _safe_get_source(d)
+                        scores_map[src] = float(s)
+                except Exception:
+                    pass
 
-                    st.markdown(respuesta_final)
-                    st.session_state.messages.append({"role": "assistant", "content": respuesta_final})
+                log_interaction(user_q, respuesta_final, docs, scores_map=scores_map, no_docs_reason=None)
 
-                    with st.expander("Ver información de depuración"):
-                        st.write(f"**Tipo de pregunta detectado:** {tipo_pregunta}")
-                        st.write(f"**Parámetros de búsqueda:** {params}")
-                        st.write(f"**Documentos recuperados:** {len(documentos_fuente)}")
-                        st.json([doc.dict() for doc in documentos_fuente])
-
-                except Exception as e:
-                    st.error(f"Ocurrió un error: {e}")
-    else:
-        st.error("El chatbot no está disponible.")
+            except st.StopException:
+                pass
+            except Exception as e:
+                st.error(f"Ocurrió un error: {e}")
