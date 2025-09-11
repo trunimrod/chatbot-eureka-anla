@@ -18,7 +18,7 @@ import streamlit as st
 from langchain_chroma import Chroma
 from langchain_ollama.embeddings import OllamaEmbeddings
 from langchain_ollama import OllamaLLM
-from langchain.prompts import PromptTemplate
+from langchain.prompts import PromptTemplate  # puede recibirse str o PromptTemplate desde prompts.py
 from langchain_core.output_parsers import StrOutputParser
 
 # Prompts existentes
@@ -178,7 +178,22 @@ def log_interaction(question: str, response: str, docs, scores_map=None, no_docs
 def cargar_componentes():
     embeddings = OllamaEmbeddings(model=MODELO_EMBEDDING, base_url=OLLAMA_HOST)
     db = Chroma(persist_directory=DIRECTORIO_CHROMA_DB, embedding_function=embeddings)
-    llm_extract = OllamaLLM(model=MODELO_LLM, temperature=0.2, base_url=OLLAMA_HOST)
+   @st.cache_resource(show_spinner=False)
+def construir_cadenas(llm_extract: OllamaLLM, llm_eureka_stream: OllamaLLM):
+    # Permite que EXTRACTOR_PROMPT / EUREKA_PROMPT sean str o PromptTemplate ya construido
+    def _ensure_prompt(tpl_or_prompt, vars_):
+        if isinstance(tpl_or_prompt, str):
+            return PromptTemplate(template=tpl_or_prompt, input_variables=vars_)
+        # Si ya es un PromptTemplate o similar, lo usamos tal cual
+        return tpl_or_prompt
+
+    extractor_pt = _ensure_prompt(EXTRACTOR_PROMPT, ["contexto", "pregunta"])
+    eureka_pt = _ensure_prompt(EUREKA_PROMPT, ["respuesta_tecnica"])
+
+    extractor = extractor_pt | llm_extract | StrOutputParser()
+    eureka_stream_chain = eureka_pt | llm_eureka_stream | StrOutputParser()
+
+    return extractor, eureka_stream_chain= OllamaLLM(model=MODELO_LLM, temperature=0.2, base_url=OLLAMA_HOST)
     # LLM con streaming habilitado para la etapa EUREKA
     llm_eureka_stream = OllamaLLM(model=MODELO_LLM, temperature=0.2, base_url=OLLAMA_HOST, streaming=True)
     return embeddings, db, llm_extract, llm_eureka_stream
@@ -270,7 +285,7 @@ if user_q:
                         """.format(motivo=no_docs_reason)
                     )
                     log_interaction(user_q, response="", docs=[], scores_map={}, no_docs_reason=no_docs_reason)
-                    raise st.StopException
+                    st.stop()
 
                 # Limitar tamaño del contexto
                 contexto = limitar_contexto(docs, MAX_CONTEXT_CHARS)
@@ -322,7 +337,5 @@ if user_q:
 
                 log_interaction(user_q, respuesta_final, docs, scores_map=scores_map, no_docs_reason=None)
 
-            except st.StopException:
-                pass
             except Exception as e:
                 st.error(f"Ocurrió un error: {e}")
