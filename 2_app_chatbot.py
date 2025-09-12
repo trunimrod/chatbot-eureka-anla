@@ -384,27 +384,73 @@ if user_q:
                         "technical_summary": resp_tecnica[:200] + "..." if len(resp_tecnica) > 200 else resp_tecnica
                     })
                     
-                    # Análisis de contenido específico
+                    # Análisis de contenido específico con detector corregido
                     st.subheader("🔍 Análisis de especificidad")
                     
-                    # Buscar nombres propios en documentos
+                    # Buscar nombres propios REALES en documentos (detector mejorado)
                     import re
                     nombres_propios_encontrados = set()
-                    patron_nombres = re.compile(r'\b[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]+(?:\s+[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]+)*\b')
+                    # Patrón más preciso que excluye palabras comunes al inicio de oración
+                    patron_nombres = re.compile(r'\b[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]{2,}(?:\s+[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]{2,})*\b')
                     
                     for doc in docs:
                         nombres_en_doc = patron_nombres.findall(doc.page_content)
                         nombres_propios_encontrados.update(nombres_en_doc)
                     
-                    # Filtrar nombres comunes que no son específicos
-                    nombres_comunes = {'Ley', 'Artículo', 'Constitución', 'Estado', 'República', 'Colombia', 'Nacional', 'Ministerio', 'ANLA', 'Autoridad'}
-                    nombres_especificos = [n for n in nombres_propios_encontrados if n not in nombres_comunes]
+                    # Filtrar palabras que NO son nombres específicos problemáticos
+                    palabras_excluir = {
+                        # Palabras legales comunes
+                        'Constitución', 'Artículo', 'República', 'Colombia', 'Nacional', 'Ministerio', 
+                        'ANLA', 'Autoridad', 'Estado', 'Gobierno', 'Congreso', 'Presidente', 'Corte',
+                        # Palabras comunes al inicio de párrafos
+                        'Por', 'Para', 'Según', 'Como', 'Cuando', 'Durante', 'Mediante', 'Además',
+                        'Igualmente', 'También', 'Asimismo', 'Sin', 'Con', 'Sobre', 'Entre', 'Bajo',
+                        'Ante', 'Tras', 'Desde', 'Hasta', 'Contra', 'Hacia', 'Los', 'Las', 'Una', 'Uno',
+                        'Esta', 'Este', 'Esa', 'Ese', 'Aquella', 'Aquel', 'Dicha', 'Dicho', 'Tal',
+                        # Acciones comunes
+                        'Conocer', 'Obtener', 'Solicitar', 'Informar', 'Participar', 'Consultar'
+                    }
                     
-                    if nombres_especificos:
-                        st.warning(f"⚠️ **Nombres específicos detectados en documentos:** {', '.join(nombres_especificos[:10])}")
-                        st.write("*Esto podría explicar por qué aparecen referencias específicas en la respuesta*")
+                    nombres_especificos = [n for n in nombres_propios_encontrados 
+                                         if n not in palabras_excluir and len(n) > 3]
+                    
+                    # Detectar casos específicos conocidos
+                    casos_especificos = []
+                    casos_conocidos = ['Gorgona', 'Cerrejón', 'Guajaro', 'Bruno', 'Bolívar', 'Mercedes']
+                    for caso in casos_conocidos:
+                        for doc in docs:
+                            if caso.lower() in doc.page_content.lower():
+                                casos_especificos.append(caso)
+                                break
+                    
+                    if casos_especificos:
+                        st.warning(f"⚠️ **Casos específicos detectados:** {', '.join(casos_especificos)}")
+                        st.write("*Estos casos podrían introducir información específica en respuestas generales*")
+                    elif nombres_especificos:
+                        st.info(f"ℹ️ **Nombres detectados:** {', '.join(nombres_especificos[:5])}")
+                        st.write("*Revisar si estos nombres son relevantes para la consulta*")
                     else:
                         st.success("✅ **No se detectaron nombres específicos problemáticos**")
+                    
+                    # Análisis de priorización de documentos
+                    tipos_docs = {'normativa': 0, 'jurisprudencia': 0, 'otros': 0}
+                    for doc in docs:
+                        fuente = _safe_get_source(doc).lower()
+                        if any(tipo in fuente for tipo in ['/normativa/', '/leyes/', '/decretos/']):
+                            tipos_docs['normativa'] += 1
+                        elif '/jurisprudencia/' in fuente:
+                            tipos_docs['jurisprudencia'] += 1
+                        else:
+                            tipos_docs['otros'] += 1
+                    
+                    st.write("**📊 Distribución de tipos de documentos:**")
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Normativa", tipos_docs['normativa'])
+                    with col2:
+                        st.metric("Jurisprudencia", tipos_docs['jurisprudencia']) 
+                    with col3:
+                        st.metric("Otros", tipos_docs['otros'])
                     
                     # Análisis de la pregunta
                     st.subheader("❓ Análisis de la pregunta")
