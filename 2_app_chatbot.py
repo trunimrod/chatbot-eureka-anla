@@ -132,13 +132,43 @@ def verificar_estado_db(db):
     except Exception as e:
         return False, f"Error en base de datos: {e}"
 
+def crear_retriever_alternativo(db):
+    """Crea un retriever que funcione incluso con incompatibilidades de embeddings"""
+    try:
+        # Intentar el retriever normal primero
+        retriever = db.as_retriever(search_kwargs={"k": 3})
+        # Probar que funciona
+        test_results = retriever.invoke("prueba")
+        return retriever, "normal"
+    except Exception as e:
+        # Si falla, crear un retriever que use búsqueda directa por metadatos
+        st.warning(f"Usando modo de búsqueda alternativo debido a: {e}")
+        
+        class RetrieversAlternativo:
+            def __init__(self, db):
+                self.db = db
+            
+            def invoke(self, query):
+                try:
+                    # Intentar búsqueda semántica básica
+                    return self.db.similarity_search(query, k=3)
+                except Exception:
+                    # Si todo falla, devolver documentos aleatorios como fallback
+                    try:
+                        all_docs = self.db.similarity_search("", k=20)  # Obtener docs
+                        return all_docs[:3]  # Devolver los primeros 3
+                    except Exception:
+                        return []  # Lista vacía como último recurso
+        
+        return RetrieversAlternativo(db), "alternativo"
+
 def procesar_pregunta(pregunta: str, db, extractor_chain, eureka_chain, extractor_rights_chain, eureka_rights_chain):
-    """Proceso principal simplificado de RAG"""
+    """Proceso principal simplificado de RAG con manejo robusto de errores"""
     
     # Verificar estado de la base de datos antes de procesar
     db_ok, db_status = verificar_estado_db(db)
     if not db_ok:
-        return f"❌ **Error de Base de Datos**: {db_status}\n\nPor favor, verifica que la carpeta `chroma_db` esté presente y contenga los documentos indexados correctamente.", []
+        return f"❌ **Error de Base de Datos**: {db_status}\n\nLa base de datos no está accesible correctamente.", []
     
     # Determinar tipo de consulta
     es_especifica = es_pregunta_especifica(pregunta)
@@ -153,19 +183,26 @@ def procesar_pregunta(pregunta: str, db, extractor_chain, eureka_chain, extracto
         eureka_actual = eureka_chain
     
     try:
+        # Crear retriever con manejo de errores
+        retriever, retriever_type = crear_retriever_alternativo(db)
+        
+        if retriever_type == "alternativo":
+            st.info("🔧 Usando modo de búsqueda alternativo - la funcionalidad puede estar limitada")
+        
         # Búsqueda en la base de conocimientos
-        params = ajustar_parametros_busqueda(pregunta)
-        retriever = db.as_retriever(search_kwargs=params)
         documentos_raw = retriever.invoke(pregunta)
         
         if not documentos_raw:
-            return "No he encontrado información relevante sobre tu consulta en la base de conocimientos disponible. ¿Podrías reformular tu pregunta o ser más específico sobre qué aspecto te interesa?", []
+            return "No he encontrado información relevante sobre tu consulta en la base de conocimientos disponible. ¿Podrías reformular tu pregunta?", []
         
         # Filtrado para mantener enfoque general/específico apropiado
         documentos = filtrar_para_respuesta_general(documentos_raw, pregunta)
         
         # Crear contexto
         contexto = "\n\n".join([doc.page_content for doc in documentos])
+        
+        if not contexto.strip():
+            return "No pude extraer contenido útil de los documentos encontrados. Intenta con una pregunta más específica.", []
         
         # Paso 1: Extracción técnica
         respuesta_tecnica = extractor_actual.invoke({
@@ -179,10 +216,14 @@ def procesar_pregunta(pregunta: str, db, extractor_chain, eureka_chain, extracto
             "technical_summary": respuesta_tecnica
         })
         
+        # Agregar nota si se usó modo alternativo
+        if retriever_type == "alternativo":
+            respuesta_final = "🔧 *Respuesta generada con modo de compatibilidad*\n\n" + respuesta_final
+        
         return respuesta_final, documentos
         
     except Exception as e:
-        return f"❌ **Error durante el procesamiento**: {str(e)}\n\nIntenta con otra pregunta o verifica la configuración del sistema.", []
+        return f"❌ **Error durante el procesamiento**: {str(e)}\n\nIntenta con una pregunta diferente o verifica la configuración del sistema.", []
 
 # --- INTERFAZ DE USUARIO ---
 st.set_page_config(
