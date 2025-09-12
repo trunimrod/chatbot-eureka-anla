@@ -275,10 +275,25 @@ if prompt := st.chat_input("Ejemplo: ¿Cuáles son mis derechos si un proyecto m
 
 # Información adicional en el sidebar
 with st.sidebar:
-    st.header("Información")
+    st.header("Información del Sistema")
     st.write("**Versión:** Simplificada v1.0")
-    st.write("**Enfoque:** Mantener especificidad apropiada")
-    st.write("**Modelos:** llama3.2 + nomic-embed-text")
+    st.write("**Plataforma:** Streamlit Cloud")
+    
+    # Diagnóstico del sistema
+    st.subheader("Estado del Sistema")
+    archivos_ok, archivos_msg = verificar_archivos_chroma()
+    st.write(f"**ChromaDB:** {'✅' if archivos_ok else '❌'} {archivos_msg}")
+    st.write(f"**Path ChromaDB:** `{DIRECTORIO_CHROMA_DB}`")
+    
+    # Verificar conexión Ollama
+    try:
+        import requests
+        response = requests.get(f"{OLLAMA_HOST}/api/tags", timeout=5)
+        ollama_status = "✅ Conectado" if response.status_code == 200 else "❌ Error"
+    except:
+        ollama_status = "❌ No conectado"
+    
+    st.write(f"**Ollama:** {ollama_status}")
     
     st.subheader("Ejemplos de preguntas")
     st.write("**Generales:**")
