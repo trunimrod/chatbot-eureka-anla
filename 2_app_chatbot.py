@@ -1,7 +1,6 @@
-# 2_app_chatbot.py — RAG con MMR + límite de contexto + streaming + logs + ngrok (sin secrets)
-# - Respuestas GENERALES salvo que el usuario nombre un proyecto/caso específico.
-# - Fuentes: solo se muestra "Fuentes consultadas:" (se remueven bloques que el LLM agregue).
-# - Citas en texto con superíndices (¹,²,³…), con refuerzo y fallback.
+# 2_app_chatbot.py — RAG con MMR + límite de contexto + streaming saneado + logs + ngrok (sin secrets)
+# Citas en texto con superíndices (¹,²,³…), sin listas duplicadas de “Fuentes”.
+# Responde en términos GENERALES salvo que el usuario nombre un proyecto/caso específico.
 
 # --- PARCHE PARA SQLITE3 EN STREAMLIT CLOUD ---
 __import__("pysqlite3")
@@ -26,6 +25,7 @@ from langchain.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 # ===== Prompts =====
+# Si tu prompts.py trae los prompts RIGHTS, se usan; si no, fallback al estándar.
 try:
     from prompts import (
         EUREKA_PROMPT,
@@ -39,7 +39,7 @@ except Exception:
     EXTRACTOR_PROMPT_RIGHTS = EXTRACTOR_PROMPT
 
 # =====================
-# Configuración
+# Configuración general
 # =====================
 DIRECTORIO_CHROMA_DB = os.environ.get("CHROMA_DB_DIR", "chroma_db")
 MODELO_EMBEDDING = os.environ.get("EMBED_MODEL", "nomic-embed-text")
@@ -48,20 +48,22 @@ MODELO_LLM = os.environ.get("LLM_MODEL", "llama3.2")
 # Recuperación (MMR)
 K_GENERAL = int(os.environ.get("K_GENERAL", 3))
 K_ESPECIFICA = int(os.environ.get("K_ESPECIFICA", 5))
-FETCH_K = int(os.environ.get("FETCH_K", 20))
-MMR_LAMBDA = float(os.environ.get("MMR_LAMBDA", 0.5))
+FETCH_K = int(os.environ.get("FETCH_K", 20))  # candidatos antes de MMR
+MMR_LAMBDA = float(os.environ.get("MMR_LAMBDA", 0.5))  # 0=diversidad, 1=similitud
 
 # Contexto
 MAX_CONTEXT_CHARS = int(os.environ.get("MAX_CONTEXT_CHARS", 12000))
 
 # Logs
 LOG_DB_PATH = os.environ.get("LOG_DB_PATH", "logs.db")
+
+# Depuración opcional
 DEBUG_MODE = os.environ.get("DEBUG", "0") == "1"
 
 st.set_page_config(page_title="Eureka – ANLA (RAG)", page_icon="💬", layout="centered")
 
 # =====================
-# Utilidades RAG
+# Utilidades de RAG
 # =====================
 def es_pregunta_especifica(pregunta: str) -> bool:
     patrones = [
@@ -126,7 +128,7 @@ def _safe_get_source(doc):
         src = None
     return src or "Fuente no encontrada"
 
-# ===== Intención =====
+# ======== Clasificador de intención (no LLM) ========
 _GREET_WORDS = ["hola","holi","hello","hey","buenas","buenos días","buenas tardes","buenas noches"]
 _SMALLTALK_PAT = re.compile(r"(cómo estás|que tal|qué tal|gracias|de nada|ok|vale|bkn|listo|perfecto)", re.I)
 _QWORDS_PAT = re.compile(r"\b(qué|que|cómo|como|cuál|cual|cuándo|cuando|dónde|donde|por qué|porque|quién|quien|cuánto|cuanto)\b", re.I)
@@ -134,11 +136,13 @@ _QWORDS_PAT = re.compile(r"\b(qué|que|cómo|como|cuál|cual|cuándo|cuando|dón
 def clasificar_intencion(texto: str) -> str:
     t = (texto or "").strip()
     tl = t.lower()
-    if not tl: return "vacio"
+    if not tl:
+        return "vacio"
     if any(tl.startswith(w) or w in tl for w in _GREET_WORDS):
         if "?" not in tl and not _QWORDS_PAT.search(tl) and len(tl.split()) <= 4:
             return "saludo"
-    if _SMALLTALK_PAT.search(tl): return "charla"
+    if _SMALLTALK_PAT.search(tl):
+        return "charla"
     dom_kw = ["anla","licencia","licenciamiento","ambiental","eia","pma","permiso","resolución","audiencia",
               "sustracción","forestal","vertimiento","ruido","emisión","mina","hidrocarburos","energía","proyecto",
               "evaluación","impacto","autoridad","trámite","expediente"]
@@ -146,7 +150,7 @@ def clasificar_intencion(texto: str) -> str:
         return "consulta"
     return "indeterminado"
 
-# ===== Detección DERECHOS / Seguridad hídrica =====
+# --- Detección DERECHOS/seguridad hídrica ---
 _DER_RIGHTS_PAT = re.compile(
     r"(derech|seguridad hídrica|embalse|captaci[oó]n|m3|m³|sequ[ií]a|verano|estiaje|caudal ecol[oó]gico|"
     r"concesi[oó]n de agua|autoridad|audiencia p[uú]blica|participaci[oó]n|consulta previa|prioridad de usos|balance h[ií]drico)",
@@ -160,7 +164,7 @@ def ampliar_consulta_derechos(q: str) -> str:
               "consulta previa priorización uso doméstico balance hídrico monitoreo umbrales suspensión captación PUEAA")
     return (q or "") + extras
 
-# ===== Conexión Ollama (ngrok/Cloudflare) =====
+# ======== Conexión Ollama (ngrok/Cloudflare) ========
 def _get_query_param(name: str) -> str:
     try:
         return st.query_params.get(name, "")
@@ -172,16 +176,19 @@ def _get_query_param(name: str) -> str:
 
 def _normalize_base_url(url: str) -> str:
     base = (url or "").strip()
-    if not base: raise ValueError("No se proporcionó URL pública para Ollama.")
-    if "://" not in base: base = "https://" + base
+    if not base:
+        raise ValueError("No se proporcionó URL pública para Ollama.")
+    if "://" not in base:
+        base = "https://" + base
     base = base.rstrip("/")
-    if any(h in base for h in ["localhost","127.0.0.1","0.0.0.0"]):
+    if any(h in base for h in ["localhost", "127.0.0.1", "0.0.0.0"]):
         raise ValueError("La URL apunta a host local. Usa la URL pública (ngrok/Cloudflare).")
     return base
 
 def _health_check_ollama(base: str, timeout: float = 5.0) -> Tuple[bool, str]:
     try:
-        r = requests.get(f"{base}/api/tags", timeout=timeout); r.raise_for_status()
+        r = requests.get(f"{base}/api/tags", timeout=timeout)
+        r.raise_for_status()
         return True, "OK"
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"
@@ -209,7 +216,13 @@ def init_logging_db(path: str = LOG_DB_PATH):
     except Exception as e:
         st.warning(f"No se pudo inicializar la base de logs: {e}")
 
-def log_interaction(question: str, response: str, docs, scores_map: Dict[str, float] | None = None, no_docs_reason: str | None = None):
+def log_interaction(
+    question: str,
+    response: str,
+    docs,
+    scores_map: Dict[str, float] | None = None,
+    no_docs_reason: str | None = None,
+):
     try:
         con = sqlite3.connect(LOG_DB_PATH); cur = con.cursor()
         sources = [_safe_get_source(d) for d in (docs or [])]
@@ -278,30 +291,34 @@ def _build_kwargs_for_prompt(prompt: PromptTemplate, **values: Any) -> Dict[str,
 def _make_indexed_sources(sources: List[str]) -> str:
     return "\n".join(f"{i}. {s}" for i, s in enumerate(sources, start=1))
 
-# ===== Limpieza de bloques de “Fuentes/Referencias” añadidos por el LLM =====
-LLM_SOURCES_HEADER_RE = re.compile(r"^\s*(fuentes?(?:\s+consultadas?)?|referencias|bibliograf[íi]a)\s*:?\s*$", re.I)
+# ===== Limpieza robusta de bloques “Fuentes/Referencias” que pueda escribir el LLM =====
+LLM_SOURCES_HEADER_RE = re.compile(
+    r"^\s*(?:#{1,6}\s*)?(?:\*\*|__)?\s*(fuentes?(?:\s+consultadas?)?|referencias|bibliograf[íi]a)\s*(?:\*\*|__)?\s*:?\s*$",
+    re.IGNORECASE,
+)
+_BULLET_URL_NOTE_RE = re.compile(r"^\s*(?:[-*•]|\d+\.)\s+|^\s*https?://|^\s*nota\s*:", re.IGNORECASE)
+_HR_RE = re.compile(r"^\s*(?:-{3,}|_{3,}|\*{3,})\s*$")
 
 def strip_llm_source_lists(text: str) -> str:
     """
     Remueve cualquier bloque tipo “Fuentes/Referencias/Bibliografía …”
-    en cualquier parte del cuerpo (no solo al final).
+    en cualquier parte del cuerpo (incluye bullets, URLs, 'Nota:', reglas ---).
     """
     lines = text.splitlines()
     out = []
-    skip = False
+    skipping = False
     for ln in lines:
-        if not skip and LLM_SOURCES_HEADER_RE.match(ln):
-            skip = True
+        if not skipping and LLM_SOURCES_HEADER_RE.match(ln):
+            skipping = True
             continue
-        if skip:
-            # Saltar listas numeradas, bullets o URLs hasta línea en blanco
-            if not ln.strip():
-                skip = False
+        if skipping:
+            # Dentro del bloque de “Fuentes…”
+            if _HR_RE.match(ln) or not ln.strip() or _BULLET_URL_NOTE_RE.search(ln) or LLM_SOURCES_HEADER_RE.match(ln):
+                # descarta reglas, líneas en blanco, bullets/URLs/“Nota: …” u otro encabezado de fuentes
                 continue
-            if re.match(r"^\s*(?:[-*•]|\d+\.)\s+.*$", ln) or re.match(r"^\s*https?://", ln):
-                continue
-            # si no parece parte de la lista, terminamos el skip y procesamos normal
-            skip = False
+            # línea que ya no parece parte del bloque -> salimos del modo skip
+            skipping = False
+        # fuera del bloque, conservamos
         out.append(ln)
     return "\n".join(out).strip()
 
@@ -323,8 +340,7 @@ def anonimizar_casos_en_texto(texto: str, user_q: str) -> str:
     new_lines = []
     for ln in texto.splitlines():
         if CASE_PATTERN.search(ln):
-            # Si es un encabezado/lista de ejemplo, lo omitimos
-            continue
+            continue  # omitimos esa línea para mantener enfoque general
         new_lines.append(ln)
     texto = "\n".join(new_lines)
     # 2) Reemplazo residual de nombres propios por “un proyecto similar”
@@ -377,7 +393,7 @@ def ensure_superscripts(texto: str, sources_indexed: str, llm_for_fix: OllamaLLM
     return _fallback_minimal_citations(texto, num_fuentes)
 
 # =====================
-# Carga IA (cacheados por base_url)
+# Carga de componentes IA (cacheados por base_url)
 # =====================
 @st.cache_resource(show_spinner=False)
 def cargar_componentes(base_url: str):
@@ -392,6 +408,7 @@ def cargar_componentes(base_url: str):
 
 @st.cache_resource(show_spinner=False)
 def construir_cadenas(llm_extract: OllamaLLM, llm_eureka_stream: OllamaLLM):
+    # Prompts estándar
     extractor_pt = _ensure_prompt(EXTRACTOR_PROMPT)
     eureka_pt = _ensure_prompt(EUREKA_PROMPT)
     eureka_pt_aug = _augment_eureka_for_citations(eureka_pt)
@@ -399,6 +416,7 @@ def construir_cadenas(llm_extract: OllamaLLM, llm_eureka_stream: OllamaLLM):
     extractor = extractor_pt | llm_extract | StrOutputParser()
     eureka_stream_chain = eureka_pt_aug | llm_eureka_stream | StrOutputParser()
 
+    # Prompts con enfoque de derechos
     rights_extractor_pt = _ensure_prompt(EXTRACTOR_PROMPT_RIGHTS)
     rights_eureka_pt = _ensure_prompt(EUREKA_PROMPT_RIGHTS)
     rights_eureka_pt_aug = _augment_eureka_for_citations(rights_eureka_pt)
@@ -442,9 +460,13 @@ with st.sidebar:
     if url_param and "ollama_input" not in st.session_state:
         st.session_state["ollama_input"] = url_param
     default_text = st.session_state.get("ollama_input", os.environ.get("OLLAMA_HOST", "").strip())
-    ollama_input = st.text_input("URL pública (ngrok/Cloudflare)", value=default_text,
-                                 placeholder="https://xxxx.ngrok-free.app",
-                                 help="Ej: https://6682052ab53b.ngrok-free.app", key="ollama_input")
+    ollama_input = st.text_input(
+        "URL pública (ngrok/Cloudflare)",
+        value=default_text,
+        placeholder="https://xxxx.ngrok-free.app",
+        help="Ej: https://6682052ab53b.ngrok-free.app",
+        key="ollama_input",
+    )
     col1, col2 = st.columns(2)
     with col1:
         if st.button("Conectar a Ollama", use_container_width=True):
@@ -469,11 +491,12 @@ with st.sidebar:
     if "ollama_base" in st.session_state:
         st.caption(f"Usando: `{st.session_state['ollama_base']}`")
 
+# ---- Sin conexión, detener ----
 if "ollama_base" not in st.session_state:
     st.info("💡 Pega la URL pública de tu túnel (ngrok/Cloudflare) y pulsa **Conectar a Ollama**.")
     st.stop()
 
-# ---- Cargar componentes tras conectar ----
+# ---- Cargar componentes ----
 try:
     embeddings, db, llm_extract, llm_eureka_stream = cargar_componentes(st.session_state["ollama_base"])
 except Exception as e:
@@ -503,6 +526,7 @@ if user_q:
     with st.chat_message("user"):
         st.markdown(user_q)
 
+    # Gating por intención
     intent = clasificar_intencion(user_q)
     if intent in ("saludo", "charla", "indeterminado", "vacio"):
         sugerencias = (
@@ -557,11 +581,11 @@ if user_q:
                     extractor_pt_sel = extractor_pt
                     eureka_pt_sel = eureka_pt_aug
 
-                # Paso 1: técnico
+                # Paso 1: respuesta técnica
                 extractor_kwargs = _build_kwargs_for_prompt(extractor_pt_sel, context=contexto, question=user_q)
                 resp_tecnica = extractor_sel.invoke(extractor_kwargs)
 
-                # Paso 2: explicación — STREAMING
+                # Paso 2: explicación — STREAMING saneado en vivo
                 eureka_kwargs = _build_kwargs_for_prompt(
                     eureka_pt_sel,
                     respuesta_tecnica=resp_tecnica,
@@ -572,14 +596,16 @@ if user_q:
                 acumulado = ""
                 for chunk in eureka_sel.stream(eureka_kwargs):
                     acumulado += chunk
-                    contenedor.markdown(acumulado)
-                respuesta_final = acumulado
+                    # limpiar y mantener enfoque general EN VIVO
+                    parcial = strip_llm_source_lists(acumulado)
+                    parcial = anonimizar_casos_en_texto(parcial, user_q)
+                    contenedor.markdown(parcial)
 
-                # 1) Quita listas de fuentes que el LLM haya metido
-                respuesta_final = strip_llm_source_lists(respuesta_final)
-                # 2) Fuerza enfoque general si el usuario NO pidió un caso
+                # Limpieza final + enfoque general
+                respuesta_final = strip_llm_source_lists(acumulado)
                 respuesta_final = anonimizar_casos_en_texto(respuesta_final, user_q)
-                # 3) Refuerza superíndices
+
+                # Refuerzo de superíndices
                 respuesta_final_citada = ensure_superscripts(respuesta_final, sources_indexed_text, llm_extract)
                 if respuesta_final_citada != respuesta_final:
                     respuesta_final = respuesta_final_citada
@@ -601,7 +627,7 @@ if user_q:
                         st.write(f"**Parámetros MMR:** {params}")
                         st.write(f"**Documentos recuperados:** {len(docs)}")
 
-                # Logs
+                # Logs con scores
                 scores_map: Dict[str, float] = {}
                 try:
                     sim_pairs = db.similarity_search_with_score(user_q, k=params.get("k", 3))
