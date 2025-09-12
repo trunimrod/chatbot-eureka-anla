@@ -271,9 +271,12 @@ if user_q:
     with st.chat_message("user"):
         st.markdown(user_q)
 
-    # === Filtro de intención para evitar RAG en saludos ===
+    # === Filtro de intención mejorado para mantener contexto ===
     intent = clasificar_intencion(user_q)
-    if intent in ("saludo", "charla", "indeterminado", "vacio"):
+    
+    # Solo mostrar respuesta genérica para saludos genuinamente nuevos
+    if intent in ("saludo", "charla") and len(st.session_state.messages) <= 2:
+        # Solo si es realmente el inicio de la conversación
         sugerencias = (
             "¿Sobre qué tema ambiental te gustaría saber?\n\n"
             "**Ejemplos:**\n"
@@ -286,6 +289,19 @@ if user_q:
             st.markdown(respuesta_breve)
         st.session_state.messages.append({"role": "assistant", "content": respuesta_breve})
         st.stop()
+    
+    # Para respuestas muy cortas, expandir la consulta con contexto
+    if len(user_q.strip()) <= 10 and len(st.session_state.messages) > 2:
+        # Obtener la última pregunta del asistente para dar contexto
+        last_assistant_msg = ""
+        for msg in reversed(st.session_state.messages):
+            if msg["role"] == "assistant":
+                last_assistant_msg = msg["content"]
+                break
+        
+        # Si la respuesta corta sigue a una pregunta específica, expandir contexto
+        if "?" in last_assistant_msg:
+            user_q = f"{user_q}. Contexto: respondiendo a la pregunta sobre derechos y procedimientos ambientales"
 
     # === RAG Principal ===
     with st.chat_message("assistant"):
