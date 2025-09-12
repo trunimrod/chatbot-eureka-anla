@@ -1,4 +1,4 @@
-# 2_app_chatbot.py (Basado en versión funcional - Con filtros de especificidad mejorados)
+# 2_app_chatbot.py (Versión Limpia - Sin sobrecomplicaciones)
 
 # --- PARCHE PARA SQLITE3 EN STREAMLIT CLOUD ---
 __import__('pysqlite3')
@@ -19,7 +19,6 @@ from langchain_ollama import OllamaLLM
 from langchain.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
-# Importar prompts mejorados
 from prompts import EUREKA_PROMPT, EXTRACTOR_PROMPT
 
 # =====================
@@ -29,9 +28,8 @@ DIRECTORIO_CHROMA_DB = os.environ.get("CHROMA_DB_DIR", "chroma_db")
 MODELO_EMBEDDING = os.environ.get("EMBED_MODEL", "nomic-embed-text")
 MODELO_LLM = os.environ.get("LLM_MODEL", "llama3.2")
 
-# Parámetros MMR (de la versión funcional)
-K_GENERAL = 3
-K_ESPECIFICA = 5
+# Parámetros MMR simples
+K_DOCUMENTOS = 4
 FETCH_K = 20
 MMR_LAMBDA = 0.5
 
@@ -41,58 +39,10 @@ MAX_CONTEXT_CHARS = 12000
 st.set_page_config(page_title="Eureka — ANLA", page_icon="💬", layout="centered")
 
 # =====================
-# Utilidades (versión funcional + mejoras de especificidad)
+# Utilidades básicas
 # =====================
-def es_pregunta_especifica(pregunta: str) -> bool:
-    """
-    MEJORADO: Detecta solo nombres específicos reales, no palabras interrogativas.
-    Basado en lógica funcional pero más precisa.
-    """
-    if not pregunta:
-        return False
-    
-    # Patrones más específicos que en la versión original
-    patrones = [
-        r"\bembalse\s+del?\s+\w+",  # "embalse del X"
-        r"\bproyecto\s+[A-ZÁÉÍÓÚÜÑ]\w+",  # "proyecto X" con mayúscula específica
-        r"\bempresa\s+[A-ZÁÉÍÓÚÜÑ]\w+",  # "empresa X" con mayúscula específica
-        r"\b\w+\s+S\.?A\.?S?\.?",  # Empresas con razón social
-        r"\bmunicipio\s+de\s+[A-ZÁÉÍÓÚÜÑ]\w+",  # "municipio de X" específico
-        r"\bdepartamento\s+del?\s+[A-ZÁÉÍÓÚÜÑ]\w+",  # "departamento de/del X" específico
-        # Casos específicos conocidos
-        r"\b(cerrejón|guajaro|puerto bolívar|arroyo bruno|media luna)\b",
-    ]
-    return any(re.search(p, pregunta, re.IGNORECASE) for p in patrones)
-
-def ajustar_parametros_busqueda(pregunta: str) -> dict:
-    """Misma lógica que la versión funcional"""
-    k = K_ESPECIFICA if es_pregunta_especifica(pregunta) else K_GENERAL
-    return {"k": k, "fetch_k": FETCH_K, "lambda_mult": MMR_LAMBDA}
-
-def filtrar_documentos_por_relevancia(documentos, pregunta: str, es_especifica: bool):
-    """
-    MEJORADO: Filtrado más inteligente que la versión original.
-    Para preguntas generales, evita documentos con muchos nombres específicos.
-    """
-    if es_especifica:
-        return documentos
-    
-    # Para preguntas generales, filtrar docs con muchos nombres propios
-    docs_filtrados = []
-    patron_np = re.compile(r"\b[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]+(?:\s+[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]+)*\b")
-    
-    for doc in documentos:
-        contenido = doc.page_content or ""
-        nombres_propios = len(patron_np.findall(contenido))
-        # Si tiene pocos nombres propios, probablemente es información general
-        if nombres_propios <= 3:
-            docs_filtrados.append(doc)
-    
-    # Si filtrar dejó muy pocos docs, usar los primeros documentos originales
-    return docs_filtrados if len(docs_filtrados) >= 1 else documentos[:2]
-
 def limitar_contexto(documentos, max_chars: int) -> str:
-    """Misma lógica que la versión funcional"""
+    """Combina documentos respetando límite de caracteres"""
     piezas, total = [], 0
     for i, d in enumerate(documentos, 1):
         txt = (d.page_content or "").strip()
@@ -107,17 +57,17 @@ def limitar_contexto(documentos, max_chars: int) -> str:
     return "".join(piezas).strip()
 
 def _safe_get_source(doc):
-    """Misma función que la versión funcional"""
+    """Extrae fuente del documento de forma segura"""
     src = (doc.metadata or {}).get("source")
     return src or "Fuente no encontrada"
 
-# ======== Clasificador de intención (de la versión funcional) ========
+# ======== Clasificador de intención simple ========
 _GREET_WORDS = ["hola","holi","hello","hey","buenas","buenos días","buenas tardes","buenas noches"]
-_SMALLTALK_PAT = re.compile(r"(cómo estás|que tal|qué tal|gracias|de nada|ok|vale|bkn|listo|perfecto)", re.I)
+_SMALLTALK_PAT = re.compile(r"(cómo estás|que tal|qué tal|gracias|de nada|ok|vale|listo|perfecto)", re.I)
 _QWORDS_PAT = re.compile(r"\b(qué|que|cómo|como|cuál|cual|cuándo|cuando|dónde|donde|por qué|porque|quién|quien|cuánto|cuanto)\b", re.I)
 
 def clasificar_intencion(texto: str) -> str:
-    """Misma lógica que la versión funcional"""
+    """Clasificador simple para evitar RAG en saludos"""
     t = (texto or "").strip()
     tl = t.lower()
     if not tl:
@@ -130,12 +80,12 @@ def clasificar_intencion(texto: str) -> str:
     # palabras clave del dominio
     dom_kw = ["anla","licencia","licenciamiento","ambiental","eia","pma","permiso","resolución","audiencia",
               "sustracción","forestal","vertimiento","ruido","emisión","mina","hidrocarburos","energía","proyecto",
-              "evaluación","impacto","autoridad","trámite","expediente"]
+              "evaluación","impacto","autoridad","trámite","expediente","compensación","participación","consulta"]
     if _QWORDS_PAT.search(tl) or "?" in tl or any(k in tl for k in dom_kw):
         return "consulta"
     return "indeterminado"
 
-# ======== Conexión Ollama (de la versión funcional) ========
+# ======== Conexión Ollama ========
 def _get_query_param(name: str) -> str:
     try:
         return st.query_params.get(name, "")
@@ -165,7 +115,7 @@ def _health_check_ollama(base: str, timeout: float = 5.0):
         return False, f"{type(e).__name__}: {e}"
 
 # =====================
-# Helpers de prompts (de la versión funcional)
+# Helpers de prompts
 # =====================
 def _ensure_prompt(tpl_or_prompt):
     if isinstance(tpl_or_prompt, str):
@@ -173,7 +123,7 @@ def _ensure_prompt(tpl_or_prompt):
     return tpl_or_prompt
 
 def _build_kwargs_for_prompt(prompt: PromptTemplate, **values: Any) -> Dict[str, Any]:
-    """Mapea variables de prompt dinámicamente (de la versión funcional)"""
+    """Mapea variables de prompt automáticamente"""
     wanted = set(getattr(prompt, "input_variables", []) or [])
     out: Dict[str, Any] = {}
 
@@ -188,7 +138,7 @@ def _build_kwargs_for_prompt(prompt: PromptTemplate, **values: Any) -> Dict[str,
     return out
 
 # =====================
-# Carga de componentes (EXACTAMENTE como la versión funcional)
+# Carga de componentes
 # =====================
 @st.cache_resource(show_spinner=False)
 def cargar_componentes(base_url: str):
@@ -209,14 +159,14 @@ def construir_cadenas(llm_extract: OllamaLLM, llm_eureka_stream: OllamaLLM):
     eureka_stream_chain = eureka_pt | llm_eureka_stream | StrOutputParser()
     return extractor, eureka_stream_chain, extractor_pt, eureka_pt
 
-def crear_retriever(db: Chroma, pregunta: str):
-    """EXACTAMENTE como la versión funcional"""
-    params = ajustar_parametros_busqueda(pregunta)
+def crear_retriever(db: Chroma):
+    """Retriever simple con MMR"""
+    params = {"k": K_DOCUMENTOS, "fetch_k": FETCH_K, "lambda_mult": MMR_LAMBDA}
     retriever = db.as_retriever(search_type="mmr", search_kwargs=params)
     return retriever, params
 
 def contar_indice(db: Chroma) -> int:
-    """Misma función que la versión funcional"""
+    """Cuenta documentos en el índice"""
     try:
         if hasattr(db, "_collection") and db._collection is not None:
             return int(db._collection.count())
@@ -229,10 +179,10 @@ def contar_indice(db: Chroma) -> int:
         return 0
 
 # =====================
-# UI (estructura de la versión funcional)
+# UI
 # =====================
 st.title("Eureka — ANLA · Asistente ciudadano")
-st.caption("Chat RAG con fuentes verificables y respuestas apropiadamente específicas.")
+st.caption("Te ayudo a entender tus derechos y deberes ambientales.")
 
 # ---- Sidebar: Conexión a Ollama ----
 with st.sidebar:
@@ -246,7 +196,7 @@ with st.sidebar:
         "URL pública (ngrok/Cloudflare)",
         value=default_text,
         placeholder="https://xxxx.ngrok-free.app",
-        help="Ej: https://6682052ab53b.ngrok-free.app",
+        help="Ejemplo: https://6682052ab53b.ngrok-free.app",
         key="ollama_input",
     )
     col1, col2 = st.columns(2)
@@ -273,6 +223,13 @@ with st.sidebar:
 
     if "ollama_base" in st.session_state:
         st.caption(f"Usando: `{st.session_state['ollama_base']}`")
+        
+    st.divider()
+    st.subheader("Ejemplos de uso")
+    st.write("**Preguntas generales:**")
+    st.write("• ¿Qué derechos tengo si un proyecto me afecta?")
+    st.write("• ¿Cómo participar en decisiones ambientales?")
+    st.write("• ¿Qué compensaciones puede recibir una comunidad?")
 
 # ---- Sin conexión: detener ----
 if "ollama_base" not in st.session_state:
@@ -290,11 +247,14 @@ extractor_chain, eureka_stream_chain, extractor_pt, eureka_pt = construir_cadena
 
 indice_docs = contar_indice(db)
 if indice_docs == 0:
-    st.warning("No encuentro documentos en el índice (Chroma). Carga/adjunta el `chroma_db` o re-indexa antes de usar el chat.")
+    st.warning("No encuentro documentos en el índice (Chroma). Verifica que la carpeta `chroma_db` esté disponible.")
 
 # ---- Historial ----
 if "messages" not in st.session_state:
-    st.session_state.messages = []
+    st.session_state.messages = [
+        {"role": "assistant", "content": "Hola, soy Eureka. Te ayudo a entender tus derechos ambientales y cómo participar en las decisiones que te pueden afectar. ¿En qué puedo ayudarte hoy?"}
+    ]
+
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
@@ -306,15 +266,15 @@ if user_q:
     with st.chat_message("user"):
         st.markdown(user_q)
 
-    # === Gating por intención (de la versión funcional) ===
+    # === Filtro de intención para evitar RAG en saludos ===
     intent = clasificar_intencion(user_q)
     if intent in ("saludo", "charla", "indeterminado", "vacio"):
         sugerencias = (
             "¿Sobre qué tema ambiental te gustaría saber?\n\n"
-            "Ejemplos:\n"
-            "- ¿Qué es la licencia ambiental y cuándo se requiere?\n"
-            "- ¿Cómo consultar el estado de un expediente en la ANLA?\n"
-            "- ¿Qué pasos siguen para una Evaluación de Impacto Ambiental (EIA)?"
+            "**Ejemplos:**\n"
+            "• ¿Qué es la licencia ambiental y cuándo se requiere?\n"
+            "• ¿Cómo consultar el estado de un expediente en la ANLA?\n"
+            "• ¿Qué pasos siguen para una Evaluación de Impacto Ambiental?"
         )
         respuesta_breve = "¡Hola! 👋 Estoy listo para ayudarte sobre licenciamiento y trámites ambientales.\n\n" + sugerencias
         with st.chat_message("assistant"):
@@ -322,24 +282,22 @@ if user_q:
         st.session_state.messages.append({"role": "assistant", "content": respuesta_breve})
         st.stop()
 
+    # === RAG Principal ===
     with st.chat_message("assistant"):
-        with st.spinner("Buscando en la base, extrayendo y explicando en lenguaje claro…"):
+        with st.spinner("Buscando información y preparando respuesta…"):
             try:
-                # PROCESO RAG (de la versión funcional + filtros mejorados)
-                retriever, params = crear_retriever(db, user_q)
-                docs_raw = retriever.invoke(user_q)
-                es_esp = es_pregunta_especifica(user_q)
-                docs = filtrar_documentos_por_relevancia(docs_raw, user_q, es_esp)
+                # Búsqueda de documentos
+                retriever, params = crear_retriever(db)
+                docs = retriever.invoke(user_q)
 
                 if not docs:
-                    no_docs_reason = "Índice vacío (0 docs)" if indice_docs == 0 else \
-                                     "Sin resultados (consulta fuera de dominio o parámetros muy estrictos)"
-                    st.info(f"**No encontré documentos relevantes.**\n\n*Motivo:* {no_docs_reason}")
+                    st.info("No encontré información relevante sobre tu consulta. ¿Podrías reformular la pregunta?")
                     st.stop()
 
+                # Crear contexto
                 contexto = limitar_contexto(docs, MAX_CONTEXT_CHARS)
 
-                # Paso 1: respuesta técnica
+                # Paso 1: Extracción técnica
                 extractor_kwargs = _build_kwargs_for_prompt(
                     extractor_pt,
                     context=contexto,
@@ -347,32 +305,35 @@ if user_q:
                 )
                 resp_tecnica = extractor_chain.invoke(extractor_kwargs)
 
-                # Paso 2: explicación en lenguaje claro — STREAMING
+                # Paso 2: Traducción a lenguaje claro con STREAMING
                 eureka_kwargs = _build_kwargs_for_prompt(
                     eureka_pt,
                     respuesta_tecnica=resp_tecnica,
                     question=user_q,
                 )
+                
                 contenedor = st.empty()
                 acumulado = ""
                 for chunk in eureka_stream_chain.stream(eureka_kwargs):
                     acumulado += chunk
                     contenedor.markdown(acumulado)
+                
                 respuesta_final = acumulado
 
-                # Fuentes
+                # Agregar fuentes
                 fuentes = sorted({_safe_get_source(d) for d in docs if _safe_get_source(d) != "Fuente no encontrada"})
                 if fuentes and "No he encontrado información" not in respuesta_final:
-                    respuesta_final += "\n\n---\n**Fuentes consultadas:**\n" + "\n".join(f"- {u}" for u in fuentes)
+                    respuesta_final += "\n\n---\n**Fuentes consultadas:**\n" + "\n".join(f"• {u}" for u in fuentes)
                     contenedor.markdown(respuesta_final)
 
                 st.session_state.messages.append({"role": "assistant", "content": respuesta_final})
 
-                # Debug opcional
-                with st.expander("Ver información de depuración"):
-                    st.write(f"**Tipo de pregunta:** {'específica' if es_esp else 'general'}")
-                    st.write(f"**Parámetros MMR:** {params}")
-                    st.write(f"**Documentos recuperados:** {len(docs)}")
+                # Información técnica opcional
+                with st.expander("Ver información técnica"):
+                    st.write(f"**Parámetros de búsqueda:** {params}")
+                    st.write(f"**Documentos encontrados:** {len(docs)}")
+                    st.write(f"**Caracteres de contexto:** {len(contexto)}")
 
             except Exception as e:
                 st.error(f"Ocurrió un error: {e}")
+                st.write("Intenta con otra pregunta o verifica la conexión con Ollama.")
