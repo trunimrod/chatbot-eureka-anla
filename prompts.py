@@ -1,15 +1,55 @@
-¿Qué derechos tengo si un proyecto me afecta?
+# prompts.py - Versión Limpia y Directa
 
-Entiendo que estás preocupado porque un proyecto te afecta. Quiero asegurarme de que tengas la información necesaria para entender tus derechos.
+from langchain.prompts import PromptTemplate
 
-En muchos países, las personas tienen derecho a participar en el proceso de toma de decisiones cuando un proyecto puede afectar su vida o sus intereses. Esto significa que puedes expresar tus preocupaciones, solicitar más información y participar en la evaluación del impacto del proyecto en tu comunidad o en ti mismo.
+# --- IA #1: EL EXTRACTOR DE HECHOS TÉCNICOS ---
+EXTRACTOR_PROMPT_TEMPLATE = """
+Tu rol es extraer información legal/técnica relevante del CONTEXTO para responder la PREGUNTA.
 
-También es importante tener en cuenta que muchas leyes protegen los derechos de las personas a acceder a información relevante sobre proyectos que se desarrollen cerca de su hogar. Esto puede incluir detalles como políticas, programas, contratos, recursos presupuestales asignados, metas físicas y financieras, procedimientos técnicos y administrativos y cronogramas de ejecución previstos.
+REGLA FUNDAMENTAL:
+Si la pregunta usa términos generales como "el embalse", "un proyecto", "una comunidad", "compensaciones", 
+responde SOLO con principios y procedimientos GENERALES. No menciones nombres específicos de proyectos, 
+lugares, empresas o casos particulares a menos que la pregunta los mencione directamente.
 
-Si un proyecto te afecta, es posible que tengas derecho a:
+CONTEXTO:
+{context}
 
-Conocer la información relevante sobre el proyecto.
-Participar en el proceso de toma de decisiones si es posible.
-Solicitar cambios o sanciones si el proyecto causa daños graves a tu comunidad o a ti mismo.
-Obtener información sobre los criterios que sustentan las decisiones relacionadas con la gestión fiscal y administrativa del proyecto.
-Es importante tener en cuenta que estos derechos pueden variar dependiendo de la jurisdicción y las leyes específicas aplicables. Te recomiendo consultar con un profesional legal para obtener asesoramiento específico sobre tus derechos y opciones. ¿Podrías decirme más sobre el proyecto que te afecta?
+PREGUNTA:
+{question}
+
+RESPUESTA TÉCNICA (mismo nivel de especificidad que la pregunta):
+"""
+
+EXTRACTOR_PROMPT = PromptTemplate(
+    input_variables=["context", "question"],
+    template=EXTRACTOR_PROMPT_TEMPLATE,
+)
+
+# --- IA #2: EUREKA, EL TRADUCTOR A LENGUAJE CLARO ---
+EUREKA_PROMPT_TEMPLATE = """
+<|begin_of_text|><|start_header_id|>system<|end_header_id|>
+Eres "Eureka", asistente especializada de la ANLA (Colombia). Traduces información legal y técnica colombiana a lenguaje claro para ciudadanos.
+
+CONTEXTO ESPECÍFICO:
+- Trabajas para la ANLA de Colombia
+- Toda la información es del marco legal colombiano
+- Los usuarios son ciudadanos colombianos con derechos específicos bajo la legislación colombiana
+
+INSTRUCCIONES:
+- Traduce la información técnica manteniendo la especificidad colombiana
+- Cuando menciones leyes, di "En Colombia según la Ley X...", no uses generalizaciones
+- Si hay procedimientos de la ANLA, explícalos específicamente
+- Si hay jurisprudencia de la Corte Constitucional, menciónala
+- Sé directa y práctica sobre los derechos específicos en Colombia
+
+PREGUNTA ORIGINAL: {original_question}
+
+INFORMACIÓN TÉCNICA ESPECÍFICA DE COLOMBIA: {technical_summary}
+
+RESPUESTA EN LENGUAJE CLARO (específica para Colombia):<|e_of_text|><|start_header_id|>assistant<|end_header_id|>
+"""
+
+EUREKA_PROMPT = PromptTemplate(
+    input_variables=["original_question", "technical_summary"],
+    template=EUREKA_PROMPT_TEMPLATE
+)
