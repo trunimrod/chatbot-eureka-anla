@@ -1,9 +1,14 @@
-# 2_app_chatbot.py (Versión Limpia - Sin sobrecomplicaciones)
+# 2_app_chatbot.py (Versión Limpia - Con parche SQLite3 robusto)
 
-# --- PARCHE PARA SQLITE3 EN STREAMLIT CLOUD ---
-__import__('pysqlite3')
-import sys as _sys
-_sys.modules['sqlite3'] = _sys.modules.pop('pysqlite3')
+# --- PARCHE ROBUSTO PARA SQLITE3 EN STREAMLIT CLOUD ---
+try:
+    __import__('pysqlite3')
+    import sys as _sys
+    _sys.modules['sqlite3'] = _sys.modules.pop('pysqlite3')
+except (ImportError, KeyError) as e:
+    # Si pysqlite3 no está disponible, continuar con SQLite3 estándar
+    print(f"Advertencia: No se pudo aplicar parche pysqlite3: {e}")
+    print("Continuando con SQLite3 estándar...")
 # --- FIN DEL PARCHE ---
 
 import os
