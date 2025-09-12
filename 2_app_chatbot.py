@@ -1,5 +1,6 @@
 # 2_app_chatbot.py — RAG con MMR + límite de contexto + streaming + logs + ngrok (sin secrets)
-# Citas en texto con superíndices (¹,²,³…). Con refuerzo posterior + fallback determinista.
+# Citas en texto con superíndices (¹,²,³…), sin listas duplicadas de “Fuentes”.
+# Responde en términos GENERALES salvo que el usuario nombre un proyecto/caso específico.
 
 # --- PARCHE PARA SQLITE3 EN STREAMLIT CLOUD ---
 __import__("pysqlite3")
@@ -24,7 +25,7 @@ from langchain.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 # ===== Prompts =====
-# Si tu prompts.py trae los prompts RIGHTS, se usan; si no, se hace fallback al estándar.
+# Si tu prompts.py trae los prompts RIGHTS, se usan; si no, fallback al estándar.
 try:
     from prompts import (
         EUREKA_PROMPT,
@@ -56,7 +57,7 @@ MAX_CONTEXT_CHARS = int(os.environ.get("MAX_CONTEXT_CHARS", 12000))
 # Logs
 LOG_DB_PATH = os.environ.get("LOG_DB_PATH", "logs.db")
 
-# Depuración
+# Depuración opcional
 DEBUG_MODE = os.environ.get("DEBUG", "0") == "1"
 
 st.set_page_config(page_title="Eureka – ANLA (RAG)", page_icon="💬", layout="centered")
@@ -74,7 +75,7 @@ def es_pregunta_especifica(pregunta: str) -> bool:
         r"\bmunicipio\s+de\s+\w+",
         r"\bdepartamento\s+del?\s+\w+",
     ]
-    return any(re.search(p, pregunta or "", re.IGNORECASE) for p in patrones)
+    return any(re.search(p, (pregunta or ""), re.IGNORECASE) for p in patrones)
 
 def ajustar_parametros_busqueda(pregunta: str) -> dict:
     k = K_ESPECIFICA if es_pregunta_especifica(pregunta) else K_GENERAL
@@ -90,6 +91,22 @@ def filtrar_documentos_por_relevancia(documentos, pregunta: str, es_especifica: 
         if len(patron_np.findall(contenido)) <= 3:
             docs_filtrados.append(doc)
     return docs_filtrados or documentos[:2]
+
+def reordenar_docs_para_generales(docs):
+    """Prioriza normativa sobre jurisprudencia para respuestas generales."""
+    def score(doc):
+        s = (_safe_get_source(doc) or "").lower()
+        val = 0
+        if "/normativa/" in s or "/guias" in s or "manual" in s:
+            val -= 3
+        if "/jurisprudencia/" in s:
+            val += 2
+        # Penaliza casos muy conocidos para no centrar respuesta en ellos
+        contenido = (doc.page_content or "").lower()
+        if any(k in contenido for k in ["cerrejón", "arroyo bruno", "puerto bolívar", "puerto bolivar"]):
+            val += 2
+        return val
+    return sorted(docs, key=score)
 
 def limitar_contexto(documentos, max_chars: int) -> str:
     piezas, total = [], 0
@@ -127,16 +144,14 @@ def clasificar_intencion(texto: str) -> str:
             return "saludo"
     if _SMALLTALK_PAT.search(tl):
         return "charla"
-    dom_kw = [
-        "anla","licencia","licenciamiento","ambiental","eia","pma","permiso","resolución","audiencia",
-        "sustracción","forestal","vertimiento","ruido","emisión","mina","hidrocarburos","energía","proyecto",
-        "evaluación","impacto","autoridad","trámite","expediente"
-    ]
+    dom_kw = ["anla","licencia","licenciamiento","ambiental","eia","pma","permiso","resolución","audiencia",
+              "sustracción","forestal","vertimiento","ruido","emisión","mina","hidrocarburos","energía","proyecto",
+              "evaluación","impacto","autoridad","trámite","expediente"]
     if _QWORDS_PAT.search(tl) or "?" in tl or any(k in tl for k in dom_kw):
         return "consulta"
     return "indeterminado"
 
-# --- Detección de enfoque DERECHOS/seguridad hídrica ---
+# --- Detección DERECHOS/seguridad hídrica ---
 _DER_RIGHTS_PAT = re.compile(
     r"(derech|seguridad hídrica|embalse|captaci[oó]n|m3|m³|sequ[ií]a|verano|estiaje|caudal ecol[oó]gico|"
     r"concesi[oó]n de agua|autoridad|audiencia p[uú]blica|participaci[oó]n|consulta previa|prioridad de usos|balance h[ií]drico)",
@@ -146,10 +161,8 @@ def es_consulta_derechos(texto: str) -> bool:
     return bool(_DER_RIGHTS_PAT.search(texto or ""))
 
 def ampliar_consulta_derechos(q: str) -> str:
-    extras = (
-        " concesión de aguas caudal ecológico seguridad hídrica estiaje participación audiencia pública "
-        "consulta previa priorización uso doméstico balance hídrico monitoreo umbrales suspensión captación PUEAA"
-    )
+    extras = (" concesión de aguas caudal ecológico seguridad hídrica estiaje participación audiencia pública "
+              "consulta previa priorización uso doméstico balance hídrico monitoreo umbrales suspensión captación PUEAA")
     return (q or "") + extras
 
 # ======== Conexión Ollama (ngrok/Cloudflare) ========
@@ -204,21 +217,13 @@ def init_logging_db(path: str = LOG_DB_PATH):
     except Exception as e:
         st.warning(f"No se pudo inicializar la base de logs: {e}")
 
-def log_interaction(
-    question: str,
-    response: str,
-    docs,
-    scores_map: Dict[str, float] | None = None,
-    no_docs_reason: str | None = None,
-):
+def log_interaction(question: str, response: str, docs, scores_map: Dict[str, float] | None = None, no_docs_reason: str | None = None):
     try:
         con = sqlite3.connect(LOG_DB_PATH); cur = con.cursor()
         sources = [_safe_get_source(d) for d in (docs or [])]
         doc_ids = [str((d.metadata or {}).get("id", "")) for d in (docs or [])]
         cur.execute("""
-            INSERT INTO interactions(
-                timestamp, question, response_preview, num_docs, doc_sources, doc_ids, scores, no_docs_reason
-            )
+            INSERT INTO interactions(timestamp, question, response_preview, num_docs, doc_sources, doc_ids, scores, no_docs_reason)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             datetime.utcnow().isoformat(),
@@ -235,17 +240,19 @@ def log_interaction(
         st.warning(f"No se pudo guardar el log: {e}")
 
 # =====================
-# Helpers de prompts y CITADO
+# Prompts y CITADO
 # =====================
 def _ensure_prompt(tpl_or_prompt, vars_if_str: Iterable[str] | None = None):
-    """Acepta str o PromptTemplate ya construido (si es str, deja que infiera variables)."""
     if isinstance(tpl_or_prompt, str):
         return PromptTemplate(template=tpl_or_prompt)
     return tpl_or_prompt
 
 def _augment_eureka_for_citations(pt: PromptTemplate) -> PromptTemplate:
     """
-    Añade instrucciones para citar con superíndices (¹,²,³…) usando {sources_indexed}.
+    Añade instrucciones para:
+    - Citar con superíndices (¹,²,³…) usando {sources_indexed}.
+    - NO incluir listas de "Fuentes/Referencias" en la respuesta (el sistema las añade aparte).
+    - Responder en términos GENERALES salvo que el usuario nombre un proyecto/caso; si hay casos en el contexto, mencionarlos solo como 'Ejemplo:' en una línea.
     """
     base_tmpl = pt.template
     base_vars = list(getattr(pt, "input_variables", []) or [])
@@ -254,30 +261,21 @@ def _augment_eureka_for_citations(pt: PromptTemplate) -> PromptTemplate:
     augmented = base_tmpl + (
         "\n\n---\n"
         "CITADO EN TEXTO (OBLIGATORIO):\n"
-        "- Tienes una lista numerada de **Fuentes** en {sources_indexed}.\n"
-        "- Cuando una afirmación esté sustentada en esas fuentes, agrega superíndices ¹,²,³ que correspondan al número.\n"
-        "- Coloca al menos un superíndice por párrafo cuando haya respaldo.\n"
-        "- No inventes citas: si una idea no está sustentada, no la marques.\n"
+        "- Dispones de una lista numerada de **Fuentes** en {sources_indexed}.\n"
+        "- Cuando una afirmación esté sustentada en esas fuentes, agrega superíndices ¹,²,³ con el número correspondiente.\n"
+        "- NO incluyas secciones de 'Fuentes', 'Referencias' ni enlaces al final; el sistema las agregará.\n"
+        "- Responde en términos GENERALES; no centres la respuesta en un caso/proyecto particular salvo que el usuario lo nombre. "
+        "Si el contexto trae casos, puedes incluir una línea opcional 'Ejemplo: ...¹' y volver al enfoque general.\n"
     )
     return PromptTemplate(input_variables=base_vars, template=augmented)
 
 def _build_kwargs_for_prompt(prompt: PromptTemplate, **values: Any) -> Dict[str, Any]:
-    """
-    Mapea dinámicamente variables esperadas por el prompt a valores disponibles.
-    Soporta:
-      - context/contexto/context_text
-      - question/pregunta/query/user_question/original_question
-      - respuesta_tecnica/technical_answer/answer/summary/respuesta/technical_summary
-      - sources_indexed/fuentes_indexadas/fuentes/sources
-    """
     wanted = set(getattr(prompt, "input_variables", []) or [])
     out: Dict[str, Any] = {}
-
     def pick(cands: Iterable[str], key: str):
         for c in cands:
             if c in wanted and key in values:
                 out[c] = values[key]; return
-
     pick(["context", "contexto", "context_text"], "context")
     pick(["question", "pregunta", "query", "user_question", "original_question"], "question")
     pick(["respuesta_tecnica", "technical_answer", "answer", "summary", "respuesta", "technical_summary"], "respuesta_tecnica")
@@ -287,21 +285,33 @@ def _build_kwargs_for_prompt(prompt: PromptTemplate, **values: Any) -> Dict[str,
 def _make_indexed_sources(sources: List[str]) -> str:
     return "\n".join(f"{i}. {s}" for i, s in enumerate(sources, start=1))
 
+# --- Limpia listas de “Fuentes/Referencias” que pueda escribir el LLM ---
+def strip_llm_source_lists(text: str) -> str:
+    """
+    Elimina bloques tipo:
+      'Fuentes:' / 'Fuentes consultadas:' / 'Referencias:' / 'Bibliografía:'
+    seguidos de listas numeradas o enlaces, en el CUERPO de la respuesta.
+    (Se invoca ANTES de que el sistema agregue su propia lista de fuentes.)
+    """
+    pattern = re.compile(
+        r"(?:^|\n)\s*(fuentes?(?:\s+consultadas?)?|referencias|bibliograf[íi]a)\s*:?\s*(?:\n|\r\n)+"
+        r"(?:(?:\s*[-*•]|\s*\d+\.)\s*.*\n?|\s*https?://.*\n?)+\s*$",
+        re.IGNORECASE
+    )
+    return re.sub(pattern, "", text).rstrip()
+
 # --- Refuerzo posterior de citas + fallback determinista ---
 _SUPERSCRIPT_RE = re.compile(r"[¹²³⁴⁵⁶⁷⁸⁹]")
 
 def _enforce_citations_with_llm(texto: str, sources_indexed: str, llm: OllamaLLM) -> str:
-    """
-    Pide al LLM que inserte superíndices ¹,²,³… usando la lista numerada dada.
-    No cambia el contenido, sólo añade los superíndices.
-    """
     prompt = PromptTemplate(
         input_variables=["texto", "sources_indexed"],
         template=(
-            "Añade superíndices de citas (¹,²,³…) al siguiente TEXTO, usando la lista numerada de FUENTES.\n"
+            "Añade superíndices de citas (¹,²,³…) al TEXTO usando la lista numerada de FUENTES.\n"
             "- Usa el número correspondiente de {sources_indexed}.\n"
             "- Mantén el texto idéntico salvo insertar los superíndices donde corresponda.\n"
-            "- Coloca al menos un superíndice por párrafo cuando haya respaldo.\n\n"
+            "- Coloca al menos un superíndice por párrafo cuando haya respaldo.\n"
+            "- NO agregues listas de fuentes ni enlaces; solo devuelve el TEXTO anotado.\n\n"
             "FUENTES (numeradas):\n{sources_indexed}\n\n"
             "TEXTO:\n{texto}\n\n"
             "DEVUELVE SOLO EL TEXTO ANOTADO (sin comentarios adicionales)."
@@ -309,45 +319,30 @@ def _enforce_citations_with_llm(texto: str, sources_indexed: str, llm: OllamaLLM
     )
     chain = prompt | llm | StrOutputParser()
     try:
-        anotado = chain.invoke({"texto": texto, "sources_indexed": sources_indexed})
-        return anotado
+        return chain.invoke({"texto": texto, "sources_indexed": sources_indexed})
     except Exception:
         return texto
 
 def _fallback_minimal_citations(texto: str, num_fuentes: int) -> str:
-    """
-    Si el LLM no colocó superíndices, añade al menos uno por párrafo
-    usando ¹²³… de forma secuencial (hasta 9 distinto; luego repite el último).
-    """
     if num_fuentes <= 0:
         return texto
     supers = ["¹","²","³","⁴","⁵","⁶","⁷","⁸","⁹"]
     paras = [p for p in texto.split("\n\n") if p.strip()]
     nuevos = []
     for i, p in enumerate(paras):
-        idx = min(i, num_fuentes, len(supers)) - 1
-        if idx < 0:
-            idx = 0
-        # Evita duplicar si ya hay superíndice
         if _SUPERSCRIPT_RE.search(p):
-            nuevos.append(p)
-        else:
-            nuevos.append(p + " " + supers[idx])
+            nuevos.append(p); continue
+        idx = min(i, num_fuentes, len(supers)) - 1
+        if idx < 0: idx = 0
+        nuevos.append(p + " " + supers[idx])
     return "\n\n".join(nuevos)
 
 def ensure_superscripts(texto: str, sources_indexed: str, llm_for_fix: OllamaLLM) -> str:
-    """
-    Garantiza que existan superíndices en el cuerpo del texto.
-    1) Si ya hay, retorna igual.
-    2) Intento con LLM para añadirlos.
-    3) Fallback determinista por párrafo.
-    """
     if _SUPERSCRIPT_RE.search(texto):
         return texto
     anotado = _enforce_citations_with_llm(texto, sources_indexed, llm_for_fix)
     if _SUPERSCRIPT_RE.search(anotado):
         return anotado
-    # Fallback
     num_fuentes = sum(1 for ln in sources_indexed.splitlines() if ln.strip())
     return _fallback_minimal_citations(texto, num_fuentes)
 
@@ -375,7 +370,7 @@ def construir_cadenas(llm_extract: OllamaLLM, llm_eureka_stream: OllamaLLM):
     extractor = extractor_pt | llm_extract | StrOutputParser()
     eureka_stream_chain = eureka_pt_aug | llm_eureka_stream | StrOutputParser()
 
-    # Prompts “enfoque derechos”
+    # Prompts con enfoque de derechos
     rights_extractor_pt = _ensure_prompt(EXTRACTOR_PROMPT_RIGHTS)
     rights_eureka_pt = _ensure_prompt(EUREKA_PROMPT_RIGHTS)
     rights_eureka_pt_aug = _augment_eureka_for_citations(rights_eureka_pt)
@@ -384,14 +379,8 @@ def construir_cadenas(llm_extract: OllamaLLM, llm_eureka_stream: OllamaLLM):
     eureka_rights_stream = rights_eureka_pt_aug | llm_eureka_stream | StrOutputParser()
 
     return (
-        extractor,
-        eureka_stream_chain,
-        extractor_pt,
-        eureka_pt_aug,
-        extractor_rights,
-        eureka_rights_stream,
-        rights_extractor_pt,
-        rights_eureka_pt_aug,
+        extractor, eureka_stream_chain, extractor_pt, eureka_pt_aug,
+        extractor_rights, eureka_rights_stream, rights_extractor_pt, rights_eureka_pt_aug,
     )
 
 def crear_retriever(db: Chroma, pregunta: str):
@@ -418,13 +407,12 @@ st.title("Eureka – ANLA · Asistente ciudadano")
 st.caption("Chat RAG con fuentes verificables. MMR, streaming, auditoría y citas en texto.")
 init_logging_db()
 
-# ---- Sidebar: Conexión a Ollama (sin auto-health-check) ----
+# ---- Sidebar: Conexión a Ollama ----
 with st.sidebar:
     st.subheader("Conexión a Ollama")
     url_param = _get_query_param("ollama")
     if url_param and "ollama_input" not in st.session_state:
         st.session_state["ollama_input"] = url_param
-
     default_text = st.session_state.get("ollama_input", os.environ.get("OLLAMA_HOST", "").strip())
     ollama_input = st.text_input(
         "URL pública (ngrok/Cloudflare)",
@@ -454,19 +442,15 @@ with st.sidebar:
                 st.info(f"Resultado: {'OK' if ok else 'FALLO'} • {detail}")
             except Exception as e:
                 st.error(f"Error: {e}")
-
     if "ollama_base" in st.session_state:
         st.caption(f"Usando: `{st.session_state['ollama_base']}`")
 
-# ---- Estado inicial (sin conexión) ----
+# ---- Sin conexión, detener ----
 if "ollama_base" not in st.session_state:
-    st.info(
-        "💡 Pega en la **barra lateral** la URL pública de tu túnel (ngrok/Cloudflare) y pulsa **Conectar a Ollama**.\n\n"
-        "Ejemplo: `https://6682052ab53b.ngrok-free.app`"
-    )
+    st.info("💡 Pega la URL pública de tu túnel (ngrok/Cloudflare) y pulsa **Conectar a Ollama**.")
     st.stop()
 
-# ---- Cargar componentes tras conectar ----
+# ---- Cargar componentes ----
 try:
     embeddings, db, llm_extract, llm_eureka_stream = cargar_componentes(st.session_state["ollama_base"])
 except Exception as e:
@@ -474,14 +458,8 @@ except Exception as e:
     st.stop()
 
 (
-    extractor_chain,
-    eureka_stream_chain,
-    extractor_pt,
-    eureka_pt_aug,
-    extractor_chain_rights,
-    eureka_stream_chain_rights,
-    extractor_pt_rights,
-    eureka_pt_rights_aug,
+    extractor_chain, eureka_stream_chain, extractor_pt, eureka_pt_aug,
+    extractor_chain_rights, eureka_stream_chain_rights, extractor_pt_rights, eureka_pt_rights_aug,
 ) = construir_cadenas(llm_extract, llm_eureka_stream)
 
 indice_docs = contar_indice(db)
@@ -502,7 +480,7 @@ if user_q:
     with st.chat_message("user"):
         st.markdown(user_q)
 
-    # Gating por intención (evita RAG en saludos/charla)
+    # Gating por intención
     intent = clasificar_intencion(user_q)
     if intent in ("saludo", "charla", "indeterminado", "vacio"):
         sugerencias = (
@@ -521,7 +499,7 @@ if user_q:
     with st.chat_message("assistant"):
         with st.spinner("Buscando en la base, extrayendo y explicando en lenguaje claro…"):
             try:
-                # Modo derechos + expansión de consulta
+                # Derechos + expansión
                 modo_derechos = es_consulta_derechos(user_q)
                 consulta_busqueda = ampliar_consulta_derechos(user_q) if modo_derechos else user_q
 
@@ -529,30 +507,23 @@ if user_q:
                 docs_raw = retriever.invoke(consulta_busqueda)
                 es_esp = es_pregunta_especifica(user_q)
                 docs = filtrar_documentos_por_relevancia(docs_raw, user_q, es_esp)
+                if not es_esp:
+                    docs = reordenar_docs_para_generales(docs)
 
                 if not docs:
-                    no_docs_reason = (
-                        "Índice vacío (0 docs)" if indice_docs == 0 else
-                        "Sin resultados (consulta fuera de dominio o parámetros muy estrictos)"
-                    )
-                    st.info(
-                        f"""**No encontré documentos relevantes.**
-
-*Motivo:* {no_docs_reason}
-
-*Sugerencias:* verifica que el índice `chroma_db` esté disponible y que tu pregunta esté dentro del dominio."""
-                    )
+                    no_docs_reason = "Índice vacío (0 docs)" if indice_docs == 0 else "Sin resultados (consulta fuera de dominio o parámetros muy estrictos)"
+                    st.info(f"**No encontré documentos relevantes.**\n\n*Motivo:* {no_docs_reason}\n\n*Sugerencias:* verifica que el índice `chroma_db` esté disponible y que tu pregunta esté dentro del dominio.")
                     log_interaction(user_q, response="", docs=[], scores_map={}, no_docs_reason=no_docs_reason)
                     st.stop()
 
-                # Limitar tamaño del contexto para el LLM
+                # Contexto
                 contexto = limitar_contexto(docs, MAX_CONTEXT_CHARS)
 
-                # Fuentes (orden alfabético estable → índice coincide en texto y lista)
+                # Fuentes (orden estable)
                 fuentes_list = sorted({_safe_get_source(d) for d in docs if _safe_get_source(d) != "Fuente no encontrada"})
                 sources_indexed_text = _make_indexed_sources(fuentes_list)
 
-                # Selección de cadenas según modo
+                # Selección de cadenas
                 if modo_derechos:
                     extractor_sel = extractor_chain_rights
                     eureka_sel = eureka_stream_chain_rights
@@ -564,20 +535,16 @@ if user_q:
                     extractor_pt_sel = extractor_pt
                     eureka_pt_sel = eureka_pt_aug
 
-                # Paso 1: respuesta técnica
-                extractor_kwargs = _build_kwargs_for_prompt(
-                    extractor_pt_sel,
-                    context=contexto,
-                    question=user_q,
-                )
+                # Paso 1: técnico
+                extractor_kwargs = _build_kwargs_for_prompt(extractor_pt_sel, context=contexto, question=user_q)
                 resp_tecnica = extractor_sel.invoke(extractor_kwargs)
 
                 # Paso 2: explicación — STREAMING
                 eureka_kwargs = _build_kwargs_for_prompt(
                     eureka_pt_sel,
-                    respuesta_tecnica=resp_tecnica,  # se mapea a technical_summary si aplica
-                    question=user_q,                 # se mapea a original_question si aplica
-                    sources_indexed=sources_indexed_text,  # lista numerada para citas ¹,²,³
+                    respuesta_tecnica=resp_tecnica,
+                    question=user_q,
+                    sources_indexed=sources_indexed_text,
                 )
                 contenedor = st.empty()
                 acumulado = ""
@@ -586,13 +553,16 @@ if user_q:
                     contenedor.markdown(acumulado)
                 respuesta_final = acumulado
 
-                # === REFUERZO DE CITAS ===
+                # Limpia listas de “Fuentes/Referencias” que el LLM haya puesto
+                respuesta_final = strip_llm_source_lists(respuesta_final)
+
+                # Refuerzo de superíndices
                 respuesta_final_citada = ensure_superscripts(respuesta_final, sources_indexed_text, llm_extract)
                 if respuesta_final_citada != respuesta_final:
-                    contenedor.markdown(respuesta_final_citada)
                     respuesta_final = respuesta_final_citada
+                    contenedor.markdown(respuesta_final)
 
-                # Agrega la lista numerada de fuentes (misma numeración usada en el texto)
+                # Lista final única de fuentes
                 if fuentes_list and "No he encontrado información" not in respuesta_final:
                     fuentes_md = "\n".join(f"{i+1}. {u}" for i, u in enumerate(fuentes_list))
                     respuesta_final = respuesta_final + "\n\n---\n**Fuentes consultadas:**\n" + fuentes_md
@@ -600,20 +570,13 @@ if user_q:
 
                 st.session_state.messages.append({"role": "assistant", "content": respuesta_final})
 
-                # Debug opcional
+                # Depuración opcional
                 if DEBUG_MODE:
                     with st.expander("Ver información de depuración"):
                         st.write(f"**Intención:** {intent}")
                         st.write(f"**Modo derechos:** {modo_derechos}")
-                        st.write(f"**Consulta expandida:** {consulta_busqueda}")
                         st.write(f"**Parámetros MMR:** {params}")
                         st.write(f"**Documentos recuperados:** {len(docs)}")
-                        st.write("**Fuentes indexadas (para citas):**")
-                        st.code(sources_indexed_text)
-                        try:
-                            st.json([d.dict() for d in docs])
-                        except Exception:
-                            st.write("No fue posible mostrar detalle de docs.")
 
                 # Logs con scores
                 scores_map: Dict[str, float] = {}
