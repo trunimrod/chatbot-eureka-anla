@@ -333,11 +333,101 @@ if user_q:
 
                 st.session_state.messages.append({"role": "assistant", "content": respuesta_final})
 
-                # Información técnica opcional
-                with st.expander("Ver información técnica"):
-                    st.write(f"**Parámetros de búsqueda:** {params}")
-                    st.write(f"**Documentos encontrados:** {len(docs)}")
-                    st.write(f"**Caracteres de contexto:** {len(contexto)}")
+                # Información técnica con debugging administrativo
+                with st.expander("🔧 Vista de Administrador - Análisis de consulta"):
+                    st.subheader("📊 Métricas de búsqueda")
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Documentos encontrados", len(docs))
+                    with col2:
+                        st.metric("Caracteres de contexto", len(contexto))
+                    with col3:
+                        st.metric("Parámetros MMR", f"k={params['k']}, λ={params['lambda_mult']}")
+                    
+                    st.subheader("📋 Documentos recuperados")
+                    for i, doc in enumerate(docs, 1):
+                        with st.container():
+                            fuente = _safe_get_source(doc)
+                            st.write(f"**📄 Documento {i}:**")
+                            st.write(f"**Fuente:** `{fuente}`")
+                            
+                            # Mostrar fragmento del contenido
+                            contenido = doc.page_content[:500] + "..." if len(doc.page_content) > 500 else doc.page_content
+                            st.text_area(
+                                f"Contenido (primeros 500 caracteres):",
+                                contenido,
+                                height=100,
+                                key=f"doc_content_{i}"
+                            )
+                            
+                            # Metadata adicional
+                            if doc.metadata:
+                                metadata_clean = {k: v for k, v in doc.metadata.items() if k != 'source'}
+                                if metadata_clean:
+                                    st.write(f"**Metadata:** {metadata_clean}")
+                            st.divider()
+                    
+                    st.subheader("🔄 Procesamiento paso a paso")
+                    
+                    # Paso 1: Contexto completo
+                    st.write("**1️⃣ Contexto enviado al Extractor:**")
+                    st.text_area("Contexto completo", contexto, height=150, key="contexto_completo")
+                    
+                    # Paso 2: Respuesta técnica
+                    st.write("**2️⃣ Respuesta técnica del Extractor:**")
+                    st.text_area("Extracción técnica", resp_tecnica, height=100, key="respuesta_tecnica")
+                    
+                    # Paso 3: Variables del prompt Eureka
+                    st.write("**3️⃣ Variables enviadas a Eureka:**")
+                    st.json({
+                        "original_question": user_q,
+                        "technical_summary": resp_tecnica[:200] + "..." if len(resp_tecnica) > 200 else resp_tecnica
+                    })
+                    
+                    # Análisis de contenido específico
+                    st.subheader("🔍 Análisis de especificidad")
+                    
+                    # Buscar nombres propios en documentos
+                    import re
+                    nombres_propios_encontrados = set()
+                    patron_nombres = re.compile(r'\b[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]+(?:\s+[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]+)*\b')
+                    
+                    for doc in docs:
+                        nombres_en_doc = patron_nombres.findall(doc.page_content)
+                        nombres_propios_encontrados.update(nombres_en_doc)
+                    
+                    # Filtrar nombres comunes que no son específicos
+                    nombres_comunes = {'Ley', 'Artículo', 'Constitución', 'Estado', 'República', 'Colombia', 'Nacional', 'Ministerio', 'ANLA', 'Autoridad'}
+                    nombres_especificos = [n for n in nombres_propios_encontrados if n not in nombres_comunes]
+                    
+                    if nombres_especificos:
+                        st.warning(f"⚠️ **Nombres específicos detectados en documentos:** {', '.join(nombres_especificos[:10])}")
+                        st.write("*Esto podría explicar por qué aparecen referencias específicas en la respuesta*")
+                    else:
+                        st.success("✅ **No se detectaron nombres específicos problemáticos**")
+                    
+                    # Análisis de la pregunta
+                    st.subheader("❓ Análisis de la pregunta")
+                    st.write(f"**Pregunta original:** `{user_q}`")
+                    st.write(f"**Clasificada como:** `{intent}`")
+                    
+                    # Buscar términos generales vs específicos en la pregunta
+                    terminos_generales = ['embalse', 'proyecto', 'comunidad', 'compensación', 'empresa', 'municipio']
+                    terminos_en_pregunta = [t for t in terminos_generales if t.lower() in user_q.lower()]
+                    
+                    if terminos_en_pregunta:
+                        st.info(f"📝 **Términos generales detectados:** {', '.join(terminos_en_pregunta)}")
+                        st.write("*La respuesta debería mantenerse general*")
+                    
+                    # Sugerencias de mejora
+                    st.subheader("💡 Sugerencias de mejora")
+                    if nombres_especificos and terminos_en_pregunta:
+                        st.write("**Problema detectado:** La pregunta es general pero los documentos contienen información específica")
+                        st.write("**Recomendación:** Los prompts deberían filtrar mejor la información específica")
+                    elif not terminos_en_pregunta:
+                        st.write("**Observación:** La pregunta no contiene términos que requieran filtrado especial")
+                    else:
+                        st.write("**Estado:** Los documentos parecen apropiados para una respuesta general")
 
             except Exception as e:
                 st.error(f"Ocurrió un error: {e}")
