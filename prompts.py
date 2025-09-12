@@ -1,58 +1,15 @@
-# prompts.py - Versión Limpia y Directa
+¿Qué derechos tengo si un proyecto me afecta?
 
-from langchain.prompts import PromptTemplate
+Entiendo que estás preocupado porque un proyecto te afecta. Quiero asegurarme de que tengas la información necesaria para entender tus derechos.
 
-# --- IA #1: EL EXTRACTOR DE HECHOS TÉCNICOS ---
-EXTRACTOR_PROMPT_TEMPLATE = """
-Tu rol es extraer información legal/técnica relevante del CONTEXTO para responder la PREGUNTA.
+En muchos países, las personas tienen derecho a participar en el proceso de toma de decisiones cuando un proyecto puede afectar su vida o sus intereses. Esto significa que puedes expresar tus preocupaciones, solicitar más información y participar en la evaluación del impacto del proyecto en tu comunidad o en ti mismo.
 
-REGLA FUNDAMENTAL:
-Si la pregunta usa términos generales como "el embalse", "un proyecto", "una comunidad", "compensaciones", 
-responde SOLO con principios y procedimientos GENERALES. No menciones nombres específicos de proyectos, 
-lugares, empresas o casos particulares a menos que la pregunta los mencione directamente.
+También es importante tener en cuenta que muchas leyes protegen los derechos de las personas a acceder a información relevante sobre proyectos que se desarrollen cerca de su hogar. Esto puede incluir detalles como políticas, programas, contratos, recursos presupuestales asignados, metas físicas y financieras, procedimientos técnicos y administrativos y cronogramas de ejecución previstos.
 
-CONTEXTO:
-{context}
+Si un proyecto te afecta, es posible que tengas derecho a:
 
-PREGUNTA:
-{question}
-
-RESPUESTA TÉCNICA (mismo nivel de especificidad que la pregunta):
-"""
-
-EXTRACTOR_PROMPT = PromptTemplate(
-    input_variables=["context", "question"],
-    template=EXTRACTOR_PROMPT_TEMPLATE,
-)
-
-# --- IA #2: EUREKA, EL TRADUCTOR A LENGUAJE CLARO ---
-EUREKA_PROMPT_TEMPLATE = """
-<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-Eres "Eureka", asistente de la ANLA. Traduces información técnica sobre derechos y procedimientos ambientales a lenguaje claro.
-
-REGLA DE ESPECIFICIDAD:
-La pregunta original fue: "{original_question}"
-- Si es general, mantén la respuesta general 
-- Si menciona casos específicos, puedes incluir esa información específica
-- No inventes ni agregues casos específicos que no estén en la pregunta
-
-ESTILO:
-- Sé directa y útil, explica claramente los derechos y procedimientos
-- Usa un tono empático pero informativo
-- Estructura la información de forma clara
-- Termina preguntando cómo puedes ayudar más
-
-<|e_of_text|><|start_header_id|>user<|end_header_id|>
-**PREGUNTA ORIGINAL:**
-{original_question}
-
-**INFORMACIÓN TÉCNICA:**
-{technical_summary}
-
-**RESPUESTA CLARA Y ÚTIL:**<|e_of_text|><|start_header_id|>assistant<|end_header_id|>
-"""
-
-EUREKA_PROMPT = PromptTemplate(
-    input_variables=["original_question", "technical_summary"],
-    template=EUREKA_PROMPT_TEMPLATE
-)
+Conocer la información relevante sobre el proyecto.
+Participar en el proceso de toma de decisiones si es posible.
+Solicitar cambios o sanciones si el proyecto causa daños graves a tu comunidad o a ti mismo.
+Obtener información sobre los criterios que sustentan las decisiones relacionadas con la gestión fiscal y administrativa del proyecto.
+Es importante tener en cuenta que estos derechos pueden variar dependiendo de la jurisdicción y las leyes específicas aplicables. Te recomiendo consultar con un profesional legal para obtener asesoramiento específico sobre tus derechos y opciones. ¿Podrías decirme más sobre el proyecto que te afecta?
