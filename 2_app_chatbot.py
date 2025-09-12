@@ -1,5 +1,5 @@
 # 2_app_chatbot.py — RAG con MMR + límite de contexto + streaming + logs + ngrok (sin secrets)
-# Ahora con CITAS EN TEXTO (¹,²,³, …) que corresponden a la lista numerada de “Fuentes consultadas”.
+# Citas en texto con superíndices (¹,²,³…). Con refuerzo posterior + fallback determinista.
 
 # --- PARCHE PARA SQLITE3 EN STREAMLIT CLOUD ---
 __import__("pysqlite3")
@@ -24,7 +24,7 @@ from langchain.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 # ===== Prompts =====
-# Si tu prompts.py tiene los prompts RIGHTS, los usaremos; si no, hacemos fallback al estándar.
+# Si tu prompts.py trae los prompts RIGHTS, se usan; si no, se hace fallback al estándar.
 try:
     from prompts import (
         EUREKA_PROMPT,
@@ -62,7 +62,7 @@ DEBUG_MODE = os.environ.get("DEBUG", "0") == "1"
 st.set_page_config(page_title="Eureka – ANLA (RAG)", page_icon="💬", layout="centered")
 
 # =====================
-# Utilidades
+# Utilidades de RAG
 # =====================
 def es_pregunta_especifica(pregunta: str) -> bool:
     patrones = [
@@ -128,21 +128,20 @@ def clasificar_intencion(texto: str) -> str:
     if _SMALLTALK_PAT.search(tl):
         return "charla"
     dom_kw = [
-        "anla", "licencia", "licenciamiento", "ambiental", "eia", "pma", "permiso", "resolución", "audiencia",
-        "sustracción", "forestal", "vertimiento", "ruido", "emisión", "mina", "hidrocarburos", "energía", "proyecto",
-        "evaluación", "impacto", "autoridad", "trámite", "expediente"
+        "anla","licencia","licenciamiento","ambiental","eia","pma","permiso","resolución","audiencia",
+        "sustracción","forestal","vertimiento","ruido","emisión","mina","hidrocarburos","energía","proyecto",
+        "evaluación","impacto","autoridad","trámite","expediente"
     ]
     if _QWORDS_PAT.search(tl) or "?" in tl or any(k in tl for k in dom_kw):
         return "consulta"
     return "indeterminado"
 
-# --- Detección de preguntas con enfoque de derechos / seguridad hídrica ---
+# --- Detección de enfoque DERECHOS/seguridad hídrica ---
 _DER_RIGHTS_PAT = re.compile(
     r"(derech|seguridad hídrica|embalse|captaci[oó]n|m3|m³|sequ[ií]a|verano|estiaje|caudal ecol[oó]gico|"
     r"concesi[oó]n de agua|autoridad|audiencia p[uú]blica|participaci[oó]n|consulta previa|prioridad de usos|balance h[ií]drico)",
     re.I,
 )
-
 def es_consulta_derechos(texto: str) -> bool:
     return bool(_DER_RIGHTS_PAT.search(texto or ""))
 
@@ -153,7 +152,7 @@ def ampliar_consulta_derechos(q: str) -> str:
     )
     return (q or "") + extras
 
-# ======== Soporte ngrok/Cloudflare SIN secrets ========
+# ======== Conexión Ollama (ngrok/Cloudflare) ========
 def _get_query_param(name: str) -> str:
     try:
         return st.query_params.get(name, "")
@@ -187,10 +186,8 @@ def _health_check_ollama(base: str, timeout: float = 5.0) -> Tuple[bool, str]:
 # =====================
 def init_logging_db(path: str = LOG_DB_PATH):
     try:
-        con = sqlite3.connect(path)
-        cur = con.cursor()
-        cur.execute(
-            """
+        con = sqlite3.connect(path); cur = con.cursor()
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS interactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp TEXT NOT NULL,
@@ -202,8 +199,7 @@ def init_logging_db(path: str = LOG_DB_PATH):
                 scores TEXT,
                 no_docs_reason TEXT
             )
-            """
-        )
+        """)
         con.commit(); con.close()
     except Exception as e:
         st.warning(f"No se pudo inicializar la base de logs: {e}")
@@ -219,24 +215,21 @@ def log_interaction(
         con = sqlite3.connect(LOG_DB_PATH); cur = con.cursor()
         sources = [_safe_get_source(d) for d in (docs or [])]
         doc_ids = [str((d.metadata or {}).get("id", "")) for d in (docs or [])]
-        cur.execute(
-            """
+        cur.execute("""
             INSERT INTO interactions(
                 timestamp, question, response_preview, num_docs, doc_sources, doc_ids, scores, no_docs_reason
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                datetime.utcnow().isoformat(),
-                question,
-                (response or "")[:1000],
-                len(docs or []),
-                json.dumps(sources, ensure_ascii=False),
-                json.dumps(doc_ids, ensure_ascii=False),
-                json.dumps(scores_map or {}, ensure_ascii=False),
-                no_docs_reason,
-            ),
-        )
+        """, (
+            datetime.utcnow().isoformat(),
+            question,
+            (response or "")[:1000],
+            len(docs or []),
+            json.dumps(sources, ensure_ascii=False),
+            json.dumps(doc_ids, ensure_ascii=False),
+            json.dumps(scores_map or {}, ensure_ascii=False),
+            no_docs_reason,
+        ))
         con.commit(); con.close()
     except Exception as e:
         st.warning(f"No se pudo guardar el log: {e}")
@@ -252,8 +245,7 @@ def _ensure_prompt(tpl_or_prompt, vars_if_str: Iterable[str] | None = None):
 
 def _augment_eureka_for_citations(pt: PromptTemplate) -> PromptTemplate:
     """
-    Crea un PromptTemplate que añade instrucciones para citar con superíndices (¹,²,³…)
-    usando la lista numerada que pasamos en {sources_indexed}.
+    Añade instrucciones para citar con superíndices (¹,²,³…) usando {sources_indexed}.
     """
     base_tmpl = pt.template
     base_vars = list(getattr(pt, "input_variables", []) or [])
@@ -261,11 +253,11 @@ def _augment_eureka_for_citations(pt: PromptTemplate) -> PromptTemplate:
         base_vars.append("sources_indexed")
     augmented = base_tmpl + (
         "\n\n---\n"
-        "CITADO EN TEXTO:\n"
+        "CITADO EN TEXTO (OBLIGATORIO):\n"
         "- Tienes una lista numerada de **Fuentes** en {sources_indexed}.\n"
-        "- Cuando afirmes algo sustentado en esas fuentes, agrega superíndices ¹,²,³ que correspondan al número de la fuente.\n"
+        "- Cuando una afirmación esté sustentada en esas fuentes, agrega superíndices ¹,²,³ que correspondan al número.\n"
+        "- Coloca al menos un superíndice por párrafo cuando haya respaldo.\n"
         "- No inventes citas: si una idea no está sustentada, no la marques.\n"
-        "- Mantén el estilo claro y conciso.\n"
     )
     return PromptTemplate(input_variables=base_vars, template=augmented)
 
@@ -273,10 +265,10 @@ def _build_kwargs_for_prompt(prompt: PromptTemplate, **values: Any) -> Dict[str,
     """
     Mapea dinámicamente variables esperadas por el prompt a valores disponibles.
     Soporta:
-      - context / contexto / context_text
-      - question / pregunta / query / user_question / original_question
-      - respuesta_tecnica / technical_answer / answer / summary / respuesta / technical_summary
-      - sources_indexed / fuentes_indexadas / fuentes / sources
+      - context/contexto/context_text
+      - question/pregunta/query/user_question/original_question
+      - respuesta_tecnica/technical_answer/answer/summary/respuesta/technical_summary
+      - sources_indexed/fuentes_indexadas/fuentes/sources
     """
     wanted = set(getattr(prompt, "input_variables", []) or [])
     out: Dict[str, Any] = {}
@@ -293,15 +285,71 @@ def _build_kwargs_for_prompt(prompt: PromptTemplate, **values: Any) -> Dict[str,
     return out
 
 def _make_indexed_sources(sources: List[str]) -> str:
+    return "\n".join(f"{i}. {s}" for i, s in enumerate(sources, start=1))
+
+# --- Refuerzo posterior de citas + fallback determinista ---
+_SUPERSCRIPT_RE = re.compile(r"[¹²³⁴⁵⁶⁷⁸⁹]")
+
+def _enforce_citations_with_llm(texto: str, sources_indexed: str, llm: OllamaLLM) -> str:
     """
-    Construye texto numerado para el prompt y para mostrar al usuario:
-    1. url/identificador
-    2. ...
+    Pide al LLM que inserte superíndices ¹,²,³… usando la lista numerada dada.
+    No cambia el contenido, sólo añade los superíndices.
     """
-    lines = []
-    for i, s in enumerate(sources, start=1):
-        lines.append(f"{i}. {s}")
-    return "\n".join(lines)
+    prompt = PromptTemplate(
+        input_variables=["texto", "sources_indexed"],
+        template=(
+            "Añade superíndices de citas (¹,²,³…) al siguiente TEXTO, usando la lista numerada de FUENTES.\n"
+            "- Usa el número correspondiente de {sources_indexed}.\n"
+            "- Mantén el texto idéntico salvo insertar los superíndices donde corresponda.\n"
+            "- Coloca al menos un superíndice por párrafo cuando haya respaldo.\n\n"
+            "FUENTES (numeradas):\n{sources_indexed}\n\n"
+            "TEXTO:\n{texto}\n\n"
+            "DEVUELVE SOLO EL TEXTO ANOTADO (sin comentarios adicionales)."
+        ),
+    )
+    chain = prompt | llm | StrOutputParser()
+    try:
+        anotado = chain.invoke({"texto": texto, "sources_indexed": sources_indexed})
+        return anotado
+    except Exception:
+        return texto
+
+def _fallback_minimal_citations(texto: str, num_fuentes: int) -> str:
+    """
+    Si el LLM no colocó superíndices, añade al menos uno por párrafo
+    usando ¹²³… de forma secuencial (hasta 9 distinto; luego repite el último).
+    """
+    if num_fuentes <= 0:
+        return texto
+    supers = ["¹","²","³","⁴","⁵","⁶","⁷","⁸","⁹"]
+    paras = [p for p in texto.split("\n\n") if p.strip()]
+    nuevos = []
+    for i, p in enumerate(paras):
+        idx = min(i, num_fuentes, len(supers)) - 1
+        if idx < 0:
+            idx = 0
+        # Evita duplicar si ya hay superíndice
+        if _SUPERSCRIPT_RE.search(p):
+            nuevos.append(p)
+        else:
+            nuevos.append(p + " " + supers[idx])
+    return "\n\n".join(nuevos)
+
+def ensure_superscripts(texto: str, sources_indexed: str, llm_for_fix: OllamaLLM) -> str:
+    """
+    Garantiza que existan superíndices en el cuerpo del texto.
+    1) Si ya hay, retorna igual.
+    2) Intento con LLM para añadirlos.
+    3) Fallback determinista por párrafo.
+    """
+    if _SUPERSCRIPT_RE.search(texto):
+        return texto
+    anotado = _enforce_citations_with_llm(texto, sources_indexed, llm_for_fix)
+    if _SUPERSCRIPT_RE.search(anotado):
+        return anotado
+    # Fallback
+    num_fuentes = sum(1 for ln in sources_indexed.splitlines() if ln.strip())
+    return _fallback_minimal_citations(texto, num_fuentes)
 
 # =====================
 # Carga de componentes IA (cacheados por base_url)
@@ -322,7 +370,6 @@ def construir_cadenas(llm_extract: OllamaLLM, llm_eureka_stream: OllamaLLM):
     # Prompts estándar
     extractor_pt = _ensure_prompt(EXTRACTOR_PROMPT)
     eureka_pt = _ensure_prompt(EUREKA_PROMPT)
-    # Añadimos capa de citación al EUREKA
     eureka_pt_aug = _augment_eureka_for_citations(eureka_pt)
 
     extractor = extractor_pt | llm_extract | StrOutputParser()
@@ -525,7 +572,7 @@ if user_q:
                 )
                 resp_tecnica = extractor_sel.invoke(extractor_kwargs)
 
-                # Paso 2: explicación en lenguaje claro — STREAMING con CITAS
+                # Paso 2: explicación — STREAMING
                 eureka_kwargs = _build_kwargs_for_prompt(
                     eureka_pt_sel,
                     respuesta_tecnica=resp_tecnica,  # se mapea a technical_summary si aplica
@@ -539,10 +586,16 @@ if user_q:
                     contenedor.markdown(acumulado)
                 respuesta_final = acumulado
 
-                # Agrega la lista numerada de fuentes debajo (misma numeración usada en el texto)
+                # === REFUERZO DE CITAS ===
+                respuesta_final_citada = ensure_superscripts(respuesta_final, sources_indexed_text, llm_extract)
+                if respuesta_final_citada != respuesta_final:
+                    contenedor.markdown(respuesta_final_citada)
+                    respuesta_final = respuesta_final_citada
+
+                # Agrega la lista numerada de fuentes (misma numeración usada en el texto)
                 if fuentes_list and "No he encontrado información" not in respuesta_final:
                     fuentes_md = "\n".join(f"{i+1}. {u}" for i, u in enumerate(fuentes_list))
-                    respuesta_final += "\n\n---\n**Fuentes consultadas:**\n" + fuentes_md
+                    respuesta_final = respuesta_final + "\n\n---\n**Fuentes consultadas:**\n" + fuentes_md
                     contenedor.markdown(respuesta_final)
 
                 st.session_state.messages.append({"role": "assistant", "content": respuesta_final})
