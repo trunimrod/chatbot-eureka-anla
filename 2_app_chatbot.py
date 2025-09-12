@@ -124,8 +124,21 @@ def construir_cadenas():
         st.error(f"Error al construir las cadenas de IA: {e}")
         return None, None, None, None, None
 
+def verificar_estado_db(db):
+    """Verifica si la base de datos ChromaDB está funcionando correctamente"""
+    try:
+        count = db._collection.count()
+        return True, f"Base de datos OK - {count} documentos"
+    except Exception as e:
+        return False, f"Error en base de datos: {e}"
+
 def procesar_pregunta(pregunta: str, db, extractor_chain, eureka_chain, extractor_rights_chain, eureka_rights_chain):
     """Proceso principal simplificado de RAG"""
+    
+    # Verificar estado de la base de datos antes de procesar
+    db_ok, db_status = verificar_estado_db(db)
+    if not db_ok:
+        return f"❌ **Error de Base de Datos**: {db_status}\n\nPor favor, verifica que la carpeta `chroma_db` esté presente y contenga los documentos indexados correctamente.", []
     
     # Determinar tipo de consulta
     es_especifica = es_pregunta_especifica(pregunta)
@@ -139,33 +152,37 @@ def procesar_pregunta(pregunta: str, db, extractor_chain, eureka_chain, extracto
         extractor_actual = extractor_chain
         eureka_actual = eureka_chain
     
-    # Búsqueda en la base de conocimientos
-    params = ajustar_parametros_busqueda(pregunta)
-    retriever = db.as_retriever(search_kwargs=params)
-    documentos_raw = retriever.invoke(pregunta)
-    
-    if not documentos_raw:
-        return "No he encontrado información relevante sobre tu consulta en la base de conocimientos disponible. ¿Podrías reformular tu pregunta o ser más específico sobre qué aspecto te interesa?", []
-    
-    # Filtrado para mantener enfoque general/específico apropiado
-    documentos = filtrar_para_respuesta_general(documentos_raw, pregunta)
-    
-    # Crear contexto
-    contexto = "\n\n".join([doc.page_content for doc in documentos])
-    
-    # Paso 1: Extracción técnica
-    respuesta_tecnica = extractor_actual.invoke({
-        "context": contexto,
-        "question": pregunta
-    })
-    
-    # Paso 2: Traducción a lenguaje claro
-    respuesta_final = eureka_actual.invoke({
-        "original_question": pregunta,
-        "technical_summary": respuesta_tecnica
-    })
-    
-    return respuesta_final, documentos
+    try:
+        # Búsqueda en la base de conocimientos
+        params = ajustar_parametros_busqueda(pregunta)
+        retriever = db.as_retriever(search_kwargs=params)
+        documentos_raw = retriever.invoke(pregunta)
+        
+        if not documentos_raw:
+            return "No he encontrado información relevante sobre tu consulta en la base de conocimientos disponible. ¿Podrías reformular tu pregunta o ser más específico sobre qué aspecto te interesa?", []
+        
+        # Filtrado para mantener enfoque general/específico apropiado
+        documentos = filtrar_para_respuesta_general(documentos_raw, pregunta)
+        
+        # Crear contexto
+        contexto = "\n\n".join([doc.page_content for doc in documentos])
+        
+        # Paso 1: Extracción técnica
+        respuesta_tecnica = extractor_actual.invoke({
+            "context": contexto,
+            "question": pregunta
+        })
+        
+        # Paso 2: Traducción a lenguaje claro
+        respuesta_final = eureka_actual.invoke({
+            "original_question": pregunta,
+            "technical_summary": respuesta_tecnica
+        })
+        
+        return respuesta_final, documentos
+        
+    except Exception as e:
+        return f"❌ **Error durante el procesamiento**: {str(e)}\n\nIntenta con otra pregunta o verifica la configuración del sistema.", []
 
 # --- INTERFAZ DE USUARIO ---
 st.set_page_config(
