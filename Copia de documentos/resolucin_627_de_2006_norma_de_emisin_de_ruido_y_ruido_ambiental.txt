@@ -1,0 +1,65 @@
+### **Categoría:** Normativa
+
+**URL:** <https://www.anla.gov.co/07rediseureka2024/normativa/resoluciones/resolucion-627-de-2006-norma-de-emision-de-ruido-y-ruido-ambiental>
+
+**Enlace al PDF:** <PDF no encontrado>
+
+---
+# **Título:** Resolución 627 de 2006 – Norma de Emisión de Ruido y Ruido Ambiental
+
+## **Descripción Breve**
+
+Resolución 627 de 2006 expedida por el entonces Ministerio de Ambiente, Vivienda y Desarrollo Territorial (en la actualidad, Ministerio de Ambiente y Desarrollo Sostenible), establece la norma nacional para la emisión de ruido y ruido ambiental en Colombia
+Resolución 627 de 2006
+
+## **Resumen**
+
+Autoridad Nacional de Licencias Ambientales - ANLA
+La Constitución Política de 1991 (denominada por la Corte Constitucional como: “Constitución Ecológica” o “Constitución Verde”), en el artículo 79 dispone: “Todas las personas tienen derecho a gozar de un ambiente sano. La ley garantizará la participación de la comunidad en las decisiones que puedan afectarlo. Es deber del Estado proteger la diversidad e integridad del ambiente, conservar las áreas de especial importancia ecológica y fomentar la educación para el logro de estos fines.”
+Adicionalmente, la Constitución en su artículo 80, inciso 2, establece que: el Estado, además de otras funciones en materia ambiental, deberá prevenir y controlar los factores de deterioro ambiental, imponer las sanciones legales y exigir la reparación de los daños causados.
+La Resolución 627 de 2006, expedida por el entonces Ministerio de Ambiente, Vivienda y Desarrollo Territorial (en la actualidad, Ministerio de Ambiente y Desarrollo Sostenible), establece la norma nacional para la emisión de ruido y ruido ambiental en Colombia.
+Esta resolución busca controlar las emisiones sonoras en distintos entornos, garantizando niveles que minimicen los efectos nocivos del ruido sobre la salud y el bienestar de la población. Se centra en establecer estándares diferenciados según el uso del suelo y las actividades permitidas, promoviendo el control y seguimiento del ruido tanto en áreas urbanas como rurales.
+El artículo 1 de esta resolución incorpora una serie de definiciones: Para efectos de la correcta aplicación del presente acto administrativo, se adoptan las definiciones contenidas en el Anexo 1, el cual hace parte integral de esta resolución. Los términos técnicos no definidos expresamente, deberán asumirse de acuerdo con el glosario publicado por la International Standard Organization (ISO), en especial las definiciones contempladas en la ISO 1996.
+El artículo 2 de esta resolución establece los horarios. Para efectos de aplicación de esta resolución, para todo el territorio nacional, se establecen los siguientes horarios:
+Diurno: de las 7:01 a las 21:00 horas
+Nocturno: de las 21:01 a las 7:00 horas
+El artículo 3 de esta resolución regula las Unidades de Medida. La presión sonora se expresa en Pascales, los niveles de presión sonora se expresan en decibeles (dB). Las medidas deben indicar el filtro de ponderación frecuencial utilizado (A, C, D u otro) y el filtro de ponderación
+temporal F, S o I según sea rápida, lenta o de impulso (Fast, Slow o Impulse, en inglés). Para todas las mediciones y cálculos, la presión sonora de referencia es 20 µPa.
+El artículo 14 de esta resolución regula la aplicabilidad del ruido ambiental: Los resultados obtenidos en las mediciones de ruido ambiental, deben ser utilizados para realizar el diagnóstico del ambiente por ruido. Los resultados se llevan a mapas de ruido los cuales permiten visualizar la realidad en lo que concierne a ruido ambiental, identificar zonas críticas y posibles contaminadores por emisión de ruido, entre otros. Las mediciones de ruido ambiental se efectúan de acuerdo con el procedimiento estipulado en los Capítulos II y III del Anexo 3, de esta resolución.
+El artículo 22 de esta Resolución regula la obligatoriedad de la realización de Mapas de Ruido: Corresponde a las Corporaciones Autónomas Regionales, las de Desarrollo Sostenible y las Autoridades Ambientales a que se refiere el artículo 66 de la Ley 99 de 1993, y el artículo 13 de la Ley 768 de 2002, elaborar, revisar y actualizar en los municipios de su jurisdicción con poblaciones mayores de cien mil (100.000) habitantes, mapas de ruido ambiental para aquellas áreas que sean consideradas como prioritarias. En cada uno de estos municipios, la elaboración del primer estudio y sus respectivos mapas de ruido se deben efectuar en un período máximo de cuatro (4) años contados a partir de la entrada en vigencia de la presente resolución.
+Los estudios y mapas de ruido de los municipios mayores de cien mil (100.000) habitantes se deben revisar y actualizar periódicamente cada cuatro (4) años.
+Los mapas de ruido se elaborarán de acuerdo con las especificaciones del Anexo 5.
+Las Corporaciones Autónomas Regionales, las de Desarrollo Sostenible y las Autoridades Ambientales a que se refiere el artículo 66 de la Ley 99 de 1993, y el artículo 13 de la Ley 768 de entregarán copia del mapa de ruido por municipio al IDEAM.
+El artículo 23 de esta resolución regula los fines y contenidos de los Mapas de Ruido. Los mapas de ruido son utilizados como documento básico para conocer la realidad de ruido ambiental en la población y poder desarrollar planes, programas y proyectos preventivos, correctivos o de seguimiento. Igualmente, estos deben ser utilizados como soporte e insumo
+técnico en la elaboración, desarrollo y actualización de los planes de ordenamiento territorial.
+Los mapas de ruido tienen entre otros los siguientes objetivos:
+- Permitir la evaluación ambiental de cada municipio en lo referente a contaminación por ruido.
+- Permitir el pronóstico global con respecto a las tendencias de los niveles de ruido.
+- Posibilitar la adopción de planes de acción en materia de contaminación por ruido y en general de las medidas correctivas, preventivas y de seguimiento adecuadas.
+- Establecer las condiciones en las cuales se encuentran los niveles de ruido a nivel nacional.
+Los mapas de ruido deben contener como mínimo la siguiente información:
+- Valor de los niveles de ruido ambiental existentes en cada una de las áreas evaluadas.
+- Delimitación de zonas afectadas de contaminación por ruido.
+- Fecha de elaboración del mapa de ruido.
+- Especificación de la altura a la cual se hace la representación gráfica.
+El artículo 25 de esta resolución regula los Planes de Descontaminación por Ruido. Las Corporaciones Autónomas Regionales, las de Desarrollo Sostenible y las Autoridades Ambientales a que se refiere el artículo 66 de la Ley 99 de 1993, y el artículo 13 de la Ley 768 de 2002, deben establecer y ejecutar planes de descontaminación por ruido. Estos planes deben ser desarrollados con base en los mapas de ruido elaborados para cada una de las áreas evaluadas de que trata el artículo 22.
+El artículo 28 de esta resolución regula la competencia: Las Corporaciones Autónomas Regionales, las de Desarrollo Sostenible y las Autoridades Ambientales a que se refiere el artículo 66 de la Ley 99 de 1993, y el artículo 13 de la Ley 768 de 2002, ejercerán las funciones de evaluación, control y seguimiento ambiental, a lo dispuesto en la presente resolución, de conformidad con las competencias asignadas por la Ley 99 de 1993 y sus disposiciones reglamentarias.
+El artículo 29 de esta resolución regula las sanciones. En caso de violación a las disposiciones ambientales contempladas en la presente resolución, las autoridades ambientales competentes, impondrán las medidas preventivas y sancionatorias a que haya lugar, de conformidad con el artículo 85 de la ley 99 de 1993* y sus disposiciones reglamentarias, o las que las modifiquen o sustituyan, sin perjuicio de las demás acciones a que hay lugar.
+* El artículo 66 de la Ley 1333 de 2009 subrogó los artículos 83 a 86 de la Ley 99 de 1993, luego el artículo 85 de la ley 99 de 1993 perdió vigencia. En la actualidad, las Leyes 1333 de 2009 y 2387 de 2024 regulan el procedimiento sancionatorio ambiental vigente en el país.
+
+### **Fuente:** Ministerio de Ambiente y Desarrollo Sostenible
+
+## **Palabras Claves**
+
+Ruido – Ruido Ambiental – Norma de Emisión de Ruido y Ruido Ambiental – International Standard Organization (ISO) – ISO 1996 – Unidades de Medida – Presión Sonora – Pascales – Niveles de Presión Sonora se expresan en Decibeles (dB) – Decibeles (dB) – Mapas de Ruido Ambiental – Contaminación por Ruido – Planes de Ordenamiento Territorial (POT) – Corporaciones Autónomas Regionales – Corporaciones de Desarrollo Sostenible – Autoridades Ambientales a que se refiere el artículo 66 de la Ley 99 de 1993 – Planes de Descontaminación por Ruido – Evaluación, Control y Seguimiento Ambiental – Sanciones Ambientales
+
+## **Concordancias**
+
+Decreto – Ley 2811 de 1974 – Código Nacional de Recursos Naturales Renovables y de Protección al Medio Ambiente
+Ley 99 de 1993 – Ley de Principios e Instituciones Ambientales
+Ley 768 de 2002 – Régimen Político, Administrativo y Fiscal de los Distritos Especiales de Barranquilla, Cartagena y Santa Marta
+Ley 1333 de 2009 – Procedimiento Sancionatorio Ambiental
+Ley 2387 de 2024 – Procedimiento Sancionatorio Ambiental
+Ley 2450 de 2025 – Ley contra el Ruido en Colombia / Ruido / Política de Calidad Acústica para el País
+Decreto Reglamentario 948 de 1995
+Decreto Reglamentario 1076 de 2015 – Decreto Único Reglamentario del Sector Ambiente y Desarrollo Sostenible
