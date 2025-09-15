@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 ARCHIVO_JSON = "./documentos/sentencias_extraidas.json" 
 DIRECTORIO_CHROMA_DB = "./chroma_db"
 MODELO_EMBEDDING = "nomic-embed-text" # Modelo para crear los vectores (embeddings)
+NOMBRE_COLECCION = "sentencias_anla" # <-- AÑADIDO: Nombre explícito para la colección
 
 def construir_base_de_datos_desde_json():
     """
@@ -86,6 +87,7 @@ def construir_base_de_datos_desde_json():
     Chroma.from_documents(
         documents=chunks,
         embedding=embeddings,
+        collection_name=NOMBRE_COLECCION, # <-- AÑADIDO: Se especifica el nombre de la colección
         persist_directory=DIRECTORIO_CHROMA_DB # Directorio donde se guardará la DB
     )
     
@@ -98,3 +100,4 @@ if __name__ == "__main__":
         logger.info("Se ha creado el directorio './documentos/'. Asegúrate de colocar tu archivo 'sentencias_extraidas.json' dentro.")
     
     construir_base_de_datos_desde_json()
+
