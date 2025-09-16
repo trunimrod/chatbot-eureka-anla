@@ -1,4 +1,4 @@
-# 2_app_chatbot.py (Versión con Arquitectura Anti-Alucinación)
+# 2_app_chatbot.py (Versión con Arquitectura Anti-Alucinación y Tono Mejorado)
 
 # --- PARCHE ROBUSTO PARA SQLITE3 EN STREAMLIT CLOUD ---
 try:
@@ -49,24 +49,22 @@ Eres un experto analista legal de la ANLA. Tu tarea es generar un borrador de re
 **Borrador de respuesta (basado 100% en los documentos):**
 """
 
-# El segundo modelo (Eureka) solo pule el estilo.
+# El segundo modelo (Eureka) solo pule el estilo, pero de forma más conversacional.
 STYLER_PROMPT = """
-Eres Eureka, un asistente ciudadano de la ANLA. Tu única tarea es tomar el siguiente "Borrador de respuesta" y reescribirlo para que suene más amable, cercano y fácil de entender para un ciudadano.
+Eres Eureka, un asistente ciudadano de la ANLA. Tu única tarea es tomar el siguiente "Borrador de respuesta" y convertirlo en un texto amable, conversacional y fácil de entender para un ciudadano.
 
-**REGLAS INQUEBRANTABLES:**
-- **NO AÑADAS NINGUNA INFORMACIÓN FÁCTICA NUEVA.** No puedes agregar hechos, datos, ni números de leyes o sentencias que no estén ya en el borrador. Tu trabajo es solo de estilo y tono.
-- **MANTÉN TODAS LAS CITAS LEGALES Y REFERENCIAS A DOCUMENTOS EXACTAMENTE IGUAL.** Si el borrador dice "Sentencia T-704 de 2016", tú debes decir "Sentencia T-704 de 2016".
-- **NO ELIMINES INFORMACIÓN CLAVE.** Debes mantener la integridad del borrador.
-- **Usa un tono servicial y claro.** Usa viñetas y **negritas** para mejorar la legibilidad.
-- **Si el borrador dice "No he encontrado información...",** simplemente reescríbelo de forma amable, por ejemplo: "Hola, no he encontrado información precisa sobre lo que me preguntas. ¿Podrías intentar con otras palabras?".
-
+**REGLAS INQUEBRANTABLES (Tu principal objetivo es la confianza del usuario):**
+1.  **NO AÑADAS INFORMACIÓN:** Tu única fuente es el "Borrador de respuesta". No puedes agregar ningún dato, ley, sentencia o hecho que no esté explícitamente escrito allí.
+2.  **MANTÉN LAS CITAS INTACTAS:** Debes conservar todas las referencias a sentencias, decretos o leyes tal como aparecen en el borrador. Son la base de tu credibilidad.
+3.  **TRANSFORMA EL TONO, NO EL CONTENIDO:** Tu trabajo es de estilo. Convierte el lenguaje técnico en una explicación cercana y fluida. Imagina que le estás explicando esto a un amigo o a un familiar. Usa un lenguaje positivo y de ayuda.
+4.  **ESTRUCTURA CONVERSACIONAL:** La respuesta debe ser un texto continuo y amigable, no una lista de preguntas y respuestas. Puedes usar viñetas al final para resumir los puntos más importantes si ayuda a la claridad.
 
 **Borrador de respuesta:**
 ---
 {respuesta_tecnica}
 ---
 
-**Respuesta final de Eureka (versión estilizada):**
+**Respuesta final de Eureka (versión amigable y conversacional):**
 """
 
 
@@ -336,7 +334,8 @@ if user_q := st.chat_input("Escribe tu pregunta…"):
                     for doc in docs:
                         titulo_doc = doc.metadata.get('title', '')
                         for titulo_citado in titulos_planos:
-                            if titulo_citado in titulo_doc:
+                            # Comprobación más flexible
+                            if titulo_citado.strip().lower() in titulo_doc.strip().lower():
                                 fuentes_usadas_en_borrador.add(_safe_get_source(doc))
                                 break
 
