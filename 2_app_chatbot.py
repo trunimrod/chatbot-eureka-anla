@@ -1,4 +1,4 @@
-# 2_app_chatbot.py (Versión con Vista de Administrador para Depuración)
+# 2_app_chatbot.py (Versión con Arquitectura Anti-Alucinación)
 
 # --- PARCHE ROBUSTO PARA SQLITE3 EN STREAMLIT CLOUD ---
 try:
@@ -25,18 +25,19 @@ from langchain.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 # =====================
-# PROMPTS (AJUSTE FINAL Y MÁS ESTRICTO)
+# PROMPTS (NUEVA ARQUITECTURA ANTI-ALUCINACIÓN)
 # =====================
-EXTRACTOR_PROMPT = """
-Eres un experto analista de la ANLA. Tu tarea es extraer la información fáctica y técnica más relevante de los documentos proporcionados para responder a la pregunta del usuario.
 
-**Instrucciones:**
-1.  **Enfócate en lo técnico:** Extrae datos, artículos de ley, números de resolución, procedimientos y obligaciones concretas.
-2.  **Sé conciso y directo:** No uses lenguaje introductorio. Ve directo al grano.
-3.  **Cita la fuente y el nombre del documento:** Si un dato proviene de un documento (ej. `[DOC 1]`), menciónalo junto con su título si está disponible (ej. `[DOC 1, Sentencia T-704 de 2016]`). ESTE PASO ES OBLIGATORIO para cada pieza de información que extraigas.
-4.  **Señala el contexto específico:** Es CRUCIAL que si la información se refiere a un caso, proyecto o tipo de programa concreto (ej. 'Mina El Cerrejón', 'Pago por Servicios Ambientales', 'Comunidad Media Luna Dos'), lo menciones explícitamente en la extracción. Ejemplo: "En el caso del proyecto minero El Cerrejón, se estableció el derecho a la consulta previa [DOC 1, Sentencia T-704 de 2016]".
-5.  **No interpretes ni converses:** Tu salida debe ser un resumen denso de hechos y datos extraídos.
-6.  **Si no hay información:** Si los documentos no contienen información relevante para responder, indica claramente: "No he encontrado información relevante en los documentos proporcionados."
+# El primer modelo ahora genera un borrador completo y factual.
+DRAFTER_PROMPT = """
+Eres un experto analista legal de la ANLA. Tu tarea es generar un borrador de respuesta claro y factual a la pregunta del usuario, basándote ÚNICA Y EXCLUSIVAMENTE en los documentos proporcionados.
+
+**Instrucciones OBLIGATORIAS:**
+1.  **Basa cada afirmación en un documento:** Cada frase que escribas debe provenir directamente de la información en los `[DOC #]`.
+2.  **Cita directamente en el texto:** Menciona la fuente (ej. "La Sentencia T-704 de 2016...") al hacer una afirmación. Si no hay un número de ley/sentencia, di "la normativa" o "la jurisprudencia". **NUNCA INVENTES NÚMEROS DE LEY O SENTENCIA.**
+3.  **Contextualiza la información:** Si un derecho se menciona en un caso específico (ej. "proyecto minero"), acláralo. No lo presentes como una regla general.
+4.  **Estructura como una respuesta directa:** Escribe un borrador de respuesta completo y coherente, no solo una lista de hechos.
+5.  **Si no hay información:** Responde únicamente con la frase: "No he encontrado información relevante en los documentos proporcionados."
 
 **Documentos:**
 ---
@@ -45,31 +46,27 @@ Eres un experto analista de la ANLA. Tu tarea es extraer la información fáctic
 
 **Pregunta del usuario:** {question}
 
-**Extracción técnica:**
+**Borrador de respuesta (basado 100% en los documentos):**
 """
 
-EUREKA_PROMPT = """
-Eres Eureka, un asistente ciudadano de la ANLA. Tu misión es ser 100% fiel a la información que se te proporciona, ayudando a los ciudadanos de forma clara y precisa.
+# El segundo modelo (Eureka) solo pule el estilo.
+STYLER_PROMPT = """
+Eres Eureka, un asistente ciudadano de la ANLA. Tu única tarea es tomar el siguiente "Borrador de respuesta" y reescribirlo para que suene más amable, cercano y fácil de entender para un ciudadano.
 
-*** REGLA DE ORO INQUEBRANTABLE: TU OBJETIVO PRINCIPAL ES EVITAR LA "ALUCINACIÓN". ***
-- **NUNCA, bajo ninguna circunstancia, inventes un número de ley, decreto, sentencia o cualquier tipo de cita.** Esto es un error crítico que desinforma al ciudadano. Si el resumen técnico no te da un número específico, OBLIGATORIAMENTE debes usar expresiones generales como "la normativa ambiental vigente" o "la jurisprudencia ha señalado".
-- **CITA DIRECTAMENTE TUS FUENTES DENTRO DEL TEXTO.** Cada afirmación que hagas debe estar respaldada por el resumen técnico. DEBES mencionar la fuente (el título del documento) directamente en la frase. Por ejemplo: **"La Sentencia T-704 de 2016 establece que..."** o **"Según la Declaración de Río sobre el Medio Ambiente..."**. No puedes hacer una afirmación y luego listar las fuentes solo al final. La cita debe estar en la frase misma.
-- **NO GENERALICES.** Si la información proviene de un caso específico (ej. 'proyecto minero El Cerrejón'), DEBES decirlo. Ejemplo: "En el caso específico del proyecto minero El Cerrejón, la Sentencia T-704 de 2016 reconoció el derecho a la consulta previa...".
-- **TU ÚNICA FUENTE DE VERDAD ES EL SIGUIENTE RESUMEN TÉCNICO.** Basa tu respuesta 100% y ÚNICAMENTE en este resumen. No uses ningún conocimiento externo.
+**REGLAS INQUEBRANTABLES:**
+- **NO AÑADAS NINGUNA INFORMACIÓN FÁCTICA NUEVA.** No puedes agregar hechos, datos, ni números de leyes o sentencias que no estén ya en el borrador. Tu trabajo es solo de estilo y tono.
+- **MANTÉN TODAS LAS CITAS LEGALES Y REFERENCIAS A DOCUMENTOS EXACTAMENTE IGUAL.** Si el borrador dice "Sentencia T-704 de 2016", tú debes decir "Sentencia T-704 de 2016".
+- **NO ELIMINES INFORMACIÓN CLAVE.** Debes mantener la integridad del borrador.
+- **Usa un tono servicial y claro.** Usa viñetas y **negritas** para mejorar la legibilidad.
+- **Si el borrador dice "No he encontrado información...",** simplemente reescríbelo de forma amable, por ejemplo: "Hola, no he encontrado información precisa sobre lo que me preguntas. ¿Podrías intentar con otras palabras?".
 
-**Instrucciones adicionales:**
-- Traduce el lenguaje técnico del resumen a un lenguaje claro y sencillo.
-- Usa listas y **negritas** para que la información sea fácil de leer.
-- Si el resumen indica que no hay información, responde amablemente: "Hola, no he encontrado información precisa sobre lo que me preguntas. ¿Podrías intentar con otras palabras?".
 
-**Resumen técnico para Eureka:**
+**Borrador de respuesta:**
 ---
 {respuesta_tecnica}
 ---
 
-**Pregunta original del usuario:** {question}
-
-**Respuesta de Eureka:**
+**Respuesta final de Eureka (versión estilizada):**
 """
 
 
@@ -130,7 +127,6 @@ def clasificar_intencion(texto: str) -> str:
             return "saludo"
     if _SMALLTALK_PAT.search(tl):
         return "charla"
-    # palabras clave del dominio
     dom_kw = ["anla","licencia","licenciamiento","ambiental","eia","pma","permiso","resolución","audiencia",
               "sustracción","forestal","vertimiento","ruido","emisión","mina","hidrocarburos","energía","proyecto",
               "evaluación","impacto","autoridad","trámite","expediente","compensación","participación","consulta"]
@@ -176,15 +172,12 @@ def _ensure_prompt(tpl_or_prompt):
     return tpl_or_prompt
 
 def _build_kwargs_for_prompt(prompt: PromptTemplate, **values: Any) -> Dict[str, Any]:
-    """Mapea variables de prompt automáticamente"""
     wanted = set(getattr(prompt, "input_variables", []) or [])
     out: Dict[str, Any] = {}
-
     def pick(cands: Iterable[str], key: str):
         for c in cands:
             if c in wanted and key in values:
                 out[c] = values[key]; return
-
     pick(["context", "contexto", "context_text"], "context")
     pick(["question", "pregunta", "query", "user_question", "original_question"], "question")
     pick(["respuesta_tecnica", "technical_answer", "answer", "summary", "respuesta", "technical_summary"], "respuesta_tecnica")
@@ -204,34 +197,26 @@ def cargar_componentes(base_url: str):
         embedding_function=embeddings,
         collection_name=NOMBRE_COLECCION
     )
-    llm_extract = OllamaLLM(model=MODELO_LLM, temperature=0.2, base_url=base_url)
-    llm_eureka_stream = OllamaLLM(model=MODELO_LLM, temperature=0.2, base_url=base_url, streaming=True)
-    return embeddings, db, llm_extract, llm_eureka_stream
+    llm_drafter = OllamaLLM(model=MODELO_LLM, temperature=0.1, base_url=base_url)
+    llm_styler_stream = OllamaLLM(model=MODELO_LLM, temperature=0.3, base_url=base_url, streaming=True)
+    return embeddings, db, llm_drafter, llm_styler_stream
 
 @st.cache_resource(show_spinner=False)
-def construir_cadenas(llm_extract: OllamaLLM, llm_eureka_stream: OllamaLLM):
-    extractor_pt = _ensure_prompt(EXTRACTOR_PROMPT)
-    eureka_pt = _ensure_prompt(EUREKA_PROMPT)
-    extractor = extractor_pt | llm_extract | StrOutputParser()
-    eureka_stream_chain = eureka_pt | llm_eureka_stream | StrOutputParser()
-    return extractor, eureka_stream_chain, extractor_pt, eureka_pt
+def construir_cadenas(llm_drafter: OllamaLLM, llm_styler_stream: OllamaLLM):
+    drafter_pt = _ensure_prompt(DRAFTER_PROMPT)
+    styler_pt = _ensure_prompt(STYLER_PROMPT)
+    drafter_chain = drafter_pt | llm_drafter | StrOutputParser()
+    styler_stream_chain = styler_pt | llm_styler_stream | StrOutputParser()
+    return drafter_chain, styler_stream_chain, drafter_pt, styler_pt
 
 def crear_retriever(db: Chroma):
-    """Retriever simple con MMR"""
     params = {"k": K_DOCUMENTOS, "fetch_k": FETCH_K, "lambda_mult": MMR_LAMBDA}
     retriever = db.as_retriever(search_type="mmr", search_kwargs=params)
     return retriever, params
 
 def contar_indice(db: Chroma) -> int:
-    """Cuenta documentos en el índice"""
     try:
-        if hasattr(db, "_collection") and db._collection is not None:
-            return int(db._collection.count())
-    except Exception:
-        pass
-    try:
-        res = db.similarity_search("prueba", k=1)
-        return 1 if res else 0
+        return int(db._collection.count())
     except Exception:
         return 0
 
@@ -241,7 +226,7 @@ def contar_indice(db: Chroma) -> int:
 st.title("Eureka — ANLA · Asistente ciudadano")
 st.caption("Te ayudo a entender tus derechos y deberes ambientales.")
 
-# ---- Sidebar: Conexión a Ollama ----
+# ---- Sidebar ----
 with st.sidebar:
     st.subheader("Conexión a Ollama")
     url_param = _get_query_param("ollama")
@@ -250,63 +235,45 @@ with st.sidebar:
 
     default_text = st.session_state.get("ollama_input", os.environ.get("OLLAMA_HOST", "").strip())
     ollama_input = st.text_input(
-        "URL pública (ngrok/Cloudflare)",
-        value=default_text,
-        placeholder="https://xxxx.ngrok-free.app",
-        help="Ejemplo: https://6682052ab53b.ngrok-free.app",
-        key="ollama_input",
+        "URL pública (ngrok/Cloudflare)", value=default_text, key="ollama_input"
     )
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("Conectar a Ollama", use_container_width=True):
-            try:
-                candidate = _normalize_base_url(ollama_input)
-                ok, detail = _health_check_ollama(candidate)
-                if ok:
-                    st.session_state["ollama_base"] = candidate
-                    st.success("Conectado ✅")
-                else:
-                    st.error(f"No conecta: {detail}")
-            except Exception as e:
-                st.error(f"URL inválida: {e}")
-    with col2:
-        if st.button("Probar /api/tags", use_container_width=True):
-            try:
-                candidate = _normalize_base_url(ollama_input)
-                ok, detail = _health_check_ollama(candidate)
-                st.info(f"Resultado: {'OK' if ok else 'FALLO'} • {detail}")
-            except Exception as e:
-                st.error(f"Error: {e}")
+    if st.button("Conectar a Ollama", use_container_width=True):
+        try:
+            candidate = _normalize_base_url(ollama_input)
+            ok, detail = _health_check_ollama(candidate)
+            if ok:
+                st.session_state["ollama_base"] = candidate
+                st.success("Conectado ✅")
+            else:
+                st.error(f"No conecta: {detail}")
+        except Exception as e:
+            st.error(f"URL inválida: {e}")
 
     if "ollama_base" in st.session_state:
         st.caption(f"Usando: `{st.session_state['ollama_base']}`")
         
     st.divider()
     st.subheader("Ejemplos de uso")
-    st.write("**Preguntas generales:**")
     st.write("• ¿Qué derechos tengo si un proyecto me afecta?")
     st.write("• ¿Cómo participar en decisiones ambientales?")
     st.write("• ¿Qué compensaciones puede recibir una comunidad?")
 
-# ---- Sin conexión: detener ----
+# ---- App Logic ----
 if "ollama_base" not in st.session_state:
-    st.info("💡 Pega la URL pública de tu túnel (ngrok/Cloudflare) y pulsa **Conectar a Ollama**.")
+    st.info("💡 Pega la URL pública de tu túnel y pulsa **Conectar a Ollama**.")
     st.stop()
 
-# ---- Cargar componentes ----
 try:
-    embeddings, db, llm_extract, llm_eureka_stream = cargar_componentes(st.session_state["ollama_base"])
+    embeddings, db, llm_drafter, llm_styler_stream = cargar_componentes(st.session_state["ollama_base"])
 except Exception as e:
     st.error(f"⌐ No se pudo conectar con Ollama: {e}")
     st.stop()
 
-extractor_chain, eureka_stream_chain, extractor_pt, eureka_pt = construir_cadenas(llm_extract, llm_eureka_stream)
+drafter_chain, styler_stream_chain, drafter_pt, styler_pt = construir_cadenas(llm_drafter, llm_styler_stream)
 
-indice_docs = contar_indice(db)
-if indice_docs == 0:
+if contar_indice(db) == 0:
     st.warning("No encuentro documentos en el índice (Chroma). Verifica que la carpeta `chroma_db` esté disponible.")
 
-# ---- Historial ----
 if "messages" not in st.session_state:
     st.session_state.messages = [
         {"role": "assistant", "content": "Hola, soy Eureka. Te ayudo a entender tus derechos ambientales y cómo participar en las decisiones que te pueden afectar. ¿En qué puedo ayudarte hoy?"}
@@ -316,50 +283,23 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# ---- Chat ----
-user_q = st.chat_input("Escribe tu pregunta…")
-if user_q:
+if user_q := st.chat_input("Escribe tu pregunta…"):
     st.session_state.messages.append({"role": "user", "content": user_q})
     with st.chat_message("user"):
         st.markdown(user_q)
 
-    # === Filtro de intención mejorado para mantener contexto ===
     intent = clasificar_intencion(user_q)
     
-    # Solo mostrar respuesta genérica para saludos genuinamente nuevos
     if intent in ("saludo", "charla") and len(st.session_state.messages) <= 2:
-        # Solo si es realmente el inicio de la conversación
-        sugerencias = (
-            "¿Sobre qué tema ambiental te gustaría saber?\n\n"
-            "**Ejemplos:**\n"
-            "• ¿Qué es la licencia ambiental y cuándo se requiere?\n"
-            "• ¿Cómo consultar el estado de un expediente en la ANLA?\n"
-            "• ¿Qué pasos siguen para una Evaluación de Impacto Ambiental?"
-        )
-        respuesta_breve = "¡Hola! 👋 Estoy listo para ayudarte sobre licenciamiento y trámites ambientales.\n\n" + sugerencias
+        respuesta_breve = "¡Hola! 👋 Estoy aquí para ayudarte con tus dudas sobre licenciamiento y trámites ambientales. ¿Qué te gustaría saber?"
         with st.chat_message("assistant"):
             st.markdown(respuesta_breve)
         st.session_state.messages.append({"role": "assistant", "content": respuesta_breve})
         st.stop()
-    
-    # Para respuestas muy cortas, expandir la consulta con contexto
-    if len(user_q.strip()) <= 10 and len(st.session_state.messages) > 2:
-        # Obtener la última pregunta del asistente para dar contexto
-        last_assistant_msg = ""
-        for msg in reversed(st.session_state.messages):
-            if msg["role"] == "assistant":
-                last_assistant_msg = msg["content"]
-                break
-        
-        # Si la respuesta corta sigue a una pregunta específica, expandir contexto
-        if "?" in last_assistant_msg:
-            user_q = f"{user_q}. Contexto: respondiendo a la pregunta sobre derechos y procedimientos ambientales"
 
-    # === RAG Principal ===
     with st.chat_message("assistant"):
         with st.spinner("Buscando información y preparando respuesta…"):
             try:
-                # Búsqueda de documentos
                 retriever, params = crear_retriever(db)
                 docs = retriever.invoke(user_q)
 
@@ -367,93 +307,66 @@ if user_q:
                     st.info("No encontré información relevante sobre tu consulta. ¿Podrías reformular la pregunta?")
                     st.stop()
 
-                # Crear contexto
                 contexto = limitar_contexto(docs, MAX_CONTEXT_CHARS)
 
-                # Paso 1: Extracción técnica
-                extractor_kwargs = _build_kwargs_for_prompt(
-                    extractor_pt,
-                    context=contexto,
-                    question=user_q,
-                )
-                resp_tecnica = extractor_chain.invoke(extractor_kwargs)
+                # Paso 1: Generar borrador factual
+                drafter_kwargs = _build_kwargs_for_prompt(drafter_pt, context=contexto, question=user_q)
+                resp_tecnica = drafter_chain.invoke(drafter_kwargs)
 
-                # Paso 2: Traducción a lenguaje claro con STREAMING
-                eureka_kwargs = _build_kwargs_for_prompt(
-                    eureka_pt,
-                    respuesta_tecnica=resp_tecnica,
-                    question=user_q,
-                )
+                # Paso 2: Estilizar el borrador
+                styler_kwargs = _build_kwargs_for_prompt(styler_pt, respuesta_tecnica=resp_tecnica, question=user_q)
                 
                 contenedor = st.empty()
                 acumulado = ""
-                for chunk in eureka_stream_chain.stream(eureka_kwargs):
+                for chunk in styler_stream_chain.stream(styler_kwargs):
                     acumulado += chunk
                     contenedor.markdown(acumulado)
                 
                 respuesta_final = acumulado
 
-                # Agregar fuentes (Lógica Mejorada y Precisa)
-                fuentes_citadas = set()
-                # Extraer los índices de los documentos realmente usados desde la respuesta técnica
-                indices_usados = re.findall(r'\[DOC (\d+)', resp_tecnica)
+                # Lógica de citación dinámica
+                fuentes_usadas_en_borrador = set()
+                # Buscar Títulos citados en el borrador
+                titulos_citados = re.findall(r'la\s(Sentencia.*?de\s\d{4})|el\s(Decreto.*?de\s\d{4})|la\s(Declaración.*?de\s\d{4})', resp_tecnica, re.IGNORECASE)
+                
+                # Aplanar la lista de tuplas
+                titulos_planos = [item for sublist in titulos_citados for item in sublist if item]
 
-                if indices_usados:
-                    # Construir la lista de fuentes a partir de los índices encontrados
-                    for i_str in set(indices_usados): # Usar set para evitar duplicados
-                        try:
-                            index = int(i_str) - 1
-                            if 0 <= index < len(docs):
-                                fuente = _safe_get_source(docs[index])
-                                if fuente != "Fuente no encontrada":
-                                    fuentes_citadas.add(fuente)
-                        except (ValueError, IndexError):
-                            continue
-                
-                # Fallback: si no hay tags pero sí respuesta, citar todas las fuentes recuperadas
-                if not fuentes_citadas and "No he encontrado información" not in respuesta_final:
-                    fuentes_citadas = {_safe_get_source(d) for d in docs if _safe_get_source(d) != "Fuente no encontrada"}
-                
-                if fuentes_citadas:
-                    fuentes_ordenadas = sorted(list(fuentes_citadas))
-                    # Solo añadir la sección de fuentes si hay fuentes que citar
+                if titulos_planos:
+                    for doc in docs:
+                        titulo_doc = doc.metadata.get('title', '')
+                        for titulo_citado in titulos_planos:
+                            if titulo_citado in titulo_doc:
+                                fuentes_usadas_en_borrador.add(_safe_get_source(doc))
+                                break
+
+                if not fuentes_usadas_en_borrador and "No he encontrado información" not in resp_tecnica:
+                     fuentes_usadas_en_borrador = {_safe_get_source(d) for d in docs if _safe_get_source(d) != "Fuente no encontrada"}
+
+                if fuentes_usadas_en_borrador:
+                    fuentes_ordenadas = sorted(list(fuentes_usadas_en_borrador))
                     respuesta_con_fuentes = respuesta_final + "\n\n---\n**Fuentes consultadas:**\n" + "\n".join(f"• {u}" for u in fuentes_ordenadas)
                     contenedor.markdown(respuesta_con_fuentes)
                     st.session_state.messages.append({"role": "assistant", "content": respuesta_con_fuentes})
                 else:
                     st.session_state.messages.append({"role": "assistant", "content": respuesta_final})
 
-
-                # ===============================================
-                # VISTA DE ADMINISTRADOR MEJORADA PARA DEPURACIÓN
-                # ===============================================
                 with st.expander("🔧 Vista de Administrador - DEPUREMOS EL PROCESO"):
                     st.subheader("1. Documentos Recuperados de la Base de Datos")
-                    st.info("Aquí ves el contenido COMPLETO de los documentos que el sistema encontró como potencialmente relevantes para tu pregunta. Son la 'materia prima'.")
                     for i, doc in enumerate(docs, 1):
                         with st.container(border=True):
-                            fuente = _safe_get_source(doc)
-                            st.write(f"**📄 Documento {i}:** `{fuente}`")
-                            st.text_area(
-                                f"Contenido completo del Documento {i}",
-                                doc.page_content,
-                                height=200,
-                                key=f"full_doc_content_{i}"
-                            )
-                            st.json(doc.metadata, expanded=False)
+                            st.write(f"**📄 Documento {i}:** `{_safe_get_source(doc)}`")
+                            st.text_area(f"Contenido completo Doc {i}", doc.page_content, height=150, key=f"full_doc_{i}")
                     
-                    st.subheader("2. Contexto Enviado al Primer Analista (Extractor)")
-                    st.info("Este es el texto EXACTO que se le entrega al primer modelo de IA. Es la unión de todos los documentos anteriores. Aquí es donde puede haber 'ruido' o información irrelevante.")
-                    st.text_area("Contexto completo", contexto, height=300, key="contexto_completo_debug")
+                    st.subheader("2. Contexto Enviado al Primer Modelo (Redactor)")
+                    st.text_area("Contexto completo", contexto, height=200, key="contexto_completo_debug")
                     
-                    st.subheader("3. Respuesta Técnica del Extractor")
-                    st.info("Esta es la respuesta CRUDA del primer modelo de IA. Su única tarea es resumir los hechos del texto anterior y citar de dónde los sacó (ej. [DOC 1]). **Aquí podemos detectar si la primera IA ya está inventando o mezclando información.**")
-                    st.text_area("Extracción técnica (Salida cruda)", resp_tecnica, height=300, key="respuesta_tecnica_debug")
+                    st.subheader("3. Borrador de Respuesta (Salida del Redactor)")
+                    st.text_area("Respuesta técnica factual", resp_tecnica, height=200, key="respuesta_tecnica_debug")
                     
-                    st.subheader("4. Prompt Final Enviado a Eureka (El Chatbot)")
-                    st.info("Estas son las instrucciones EXACTAS que recibe el chatbot final. Incluyen las 'Reglas de Oro' y la 'Respuesta Técnica' del paso anterior. **Si la respuesta técnica es correcta pero la respuesta final es incorrecta, el problema está en cómo la IA final interpreta estas instrucciones.**")
-                    prompt_final_eureka = eureka_pt.format(**eureka_kwargs)
-                    st.text_area("Prompt completo para Eureka", prompt_final_eureka, height=400, key="prompt_final_debug")
+                    st.subheader("4. Prompt Final Enviado a Eureka (Estilista)")
+                    prompt_final_eureka = styler_pt.format(**styler_kwargs)
+                    st.text_area("Prompt completo para Eureka", prompt_final_eureka, height=300, key="prompt_final_debug")
 
             except Exception as e:
                 st.error(f"Ocurrió un error: {e}")
