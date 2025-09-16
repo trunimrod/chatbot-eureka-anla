@@ -86,9 +86,9 @@ MODELO_EMBEDDING = os.environ.get("EMBED_MODEL", "nomic-embed-text")
 MODELO_LLM = os.environ.get("LLM_MODEL", "llama3.2")
 NOMBRE_COLECCION = "sentencias_anla" 
 
-# Parámetros MMR mejorados para una búsqueda más exhaustiva
-K_DOCUMENTOS = 8
-FETCH_K = 40
+# Parámetros MMR optimizados
+K_DOCUMENTOS = 5
+FETCH_K = 25
 MMR_LAMBDA = 0.5
 
 # Contexto
