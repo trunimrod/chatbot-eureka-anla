@@ -25,7 +25,7 @@ from langchain.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 # =====================
-# PROMPTS (NUEVA ARQUITECTURA ANTI-ALUCINACIÓN Y TONO MEJORADO)
+# PROMPTS (NUEVA ARQUITECTURA ANTI-ALUCINACIÓN)
 # =====================
 
 # El primer modelo ahora genera un borrador completo y factual.
@@ -56,8 +56,8 @@ Eres Eureka, un asistente ciudadano de la ANLA. Tu única tarea es tomar el sigu
 **REGLAS INQUEBRANTABLES (Tu principal objetivo es la confianza del usuario):**
 1.  **NO AÑADAS INFORMACIÓN:** Tu única fuente es el "Borrador de respuesta". No puedes agregar ningún dato, ley, sentencia o hecho que no esté explícitamente escrito allí.
 2.  **MANTÉN LAS CITAS INTACTAS:** Debes conservar todas las referencias a sentencias, decretos o leyes tal como aparecen en el borrador. Son la base de tu credibilidad.
-3.  **TRANSFORMA EL TONO, NO EL CONTENIDO:** Tu trabajo es de estilo. Convierte el lenguaje técnico en una explicación cercana y fluida. Imagina que le estás explicando esto a un amigo o a un familiar. Usa un lenguaje positivo, directo y de ayuda. La respuesta debe ser una narrativa amigable, no una lista de preguntas y respuestas.
-4.  **ESTRUCTURA CONVERSACIONAL:** La respuesta debe ser un texto continuo y amigable. Puedes usar viñetas al final para resumir los puntos más importantes si ayuda a la claridad.
+3.  **TRANSFORMA EL TONO, NO EL CONTENIDO:** Tu trabajo es de estilo. Convierte el lenguaje técnico en una explicación cercana y fluida. Imagina que le estás explicando esto a un amigo o a un familiar. Usa un lenguaje positivo y de ayuda.
+4.  **ESTRUCTURA CONVERSACIONAL:** La respuesta debe ser un texto continuo y amigable, no una lista de preguntas y respuestas. Puedes usar viñetas al final para resumir los puntos más importantes si ayuda a la claridad.
 
 **Borrador de respuesta:**
 ---
@@ -322,26 +322,23 @@ if user_q := st.chat_input("Escribe tu pregunta…"):
                 
                 respuesta_final = acumulado
 
-                # Lógica de citación dinámica y precisa basada en las citas del borrador
+                # Lógica de citación dinámica
                 fuentes_usadas_en_borrador = set()
+                # Buscar Títulos citados en el borrador
+                titulos_citados = re.findall(r'la\s(Sentencia.*?de\s\d{4})|el\s(Decreto.*?de\s\d{4})|la\s(Declaración.*?de\s\d{4})', resp_tecnica, re.IGNORECASE)
                 
-                # Expresión regular mejorada para capturar varios tipos de documentos
-                titulos_citados_raw = re.findall(
-                    r'(Sentencia\sT\s*–*\s*\w+\s*de\s*\d{4}|Decreto\s.*?de\s*\d{4}|Declaración\s.*?de\s*\d{4}|Ley\s\d+\sde\s\d{4})', 
-                    resp_tecnica, 
-                    re.IGNORECASE
-                )
-                
-                titulos_citados = [re.sub(r'\s+', ' ', t).strip() for t in titulos_citados_raw]
+                # Aplanar la lista de tuplas
+                titulos_planos = [item for sublist in titulos_citados for item in sublist if item]
 
-                if titulos_citados:
+                if titulos_planos:
                     for doc in docs:
-                        titulo_doc_limpio = re.sub(r'\s+', ' ', doc.metadata.get('title', '')).strip()
-                        for titulo_citado in titulos_citados:
-                            if titulo_citado.lower() in titulo_doc_limpio.lower():
+                        titulo_doc = doc.metadata.get('title', '')
+                        for titulo_citado in titulos_planos:
+                            # Comprobación más flexible
+                            if titulo_citado.strip().lower() in titulo_doc.strip().lower():
                                 fuentes_usadas_en_borrador.add(_safe_get_source(doc))
                                 break
-                
+
                 if not fuentes_usadas_en_borrador and "No he encontrado información" not in resp_tecnica:
                      fuentes_usadas_en_borrador = {_safe_get_source(d) for d in docs if _safe_get_source(d) != "Fuente no encontrada"}
 
