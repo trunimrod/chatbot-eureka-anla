@@ -1,4 +1,4 @@
-# 2_app_chatbot.py (Versión Corregida y Autocontenida para Streamlit Cloud)
+# 2_app_chatbot.py (Versión con Vista de Administrador para Depuración)
 
 # --- PARCHE ROBUSTO PARA SQLITE3 EN STREAMLIT CLOUD ---
 try:
@@ -25,7 +25,7 @@ from langchain.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 # =====================
-# PROMPTS (Mejorados para evitar alucinaciones y dar contexto)
+# PROMPTS (Mantenemos los prompts actuales para el diagnóstico)
 # =====================
 EXTRACTOR_PROMPT = """
 Eres un experto analista de la ANLA. Tu tarea es extraer la información fáctica y técnica más relevante de los documentos proporcionados para responder a la pregunta del usuario.
@@ -430,147 +430,36 @@ if user_q:
                     st.session_state.messages.append({"role": "assistant", "content": respuesta_final})
 
 
-                # Información técnica con debugging administrativo
-                with st.expander("🔧 Vista de Administrador - Análisis de consulta"):
-                    st.subheader("📊 Métricas de búsqueda")
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Documentos encontrados", len(docs))
-                    with col2:
-                        st.metric("Caracteres de contexto", len(contexto))
-                    with col3:
-                        st.metric("Parámetros MMR", f"k={params['k']}, λ={params['lambda_mult']}")
-                    
-                    st.subheader("📋 Documentos recuperados")
+                # ===============================================
+                # VISTA DE ADMINISTRADOR MEJORADA PARA DEPURACIÓN
+                # ===============================================
+                with st.expander("🔧 Vista de Administrador - DEPUREMOS EL PROCESO"):
+                    st.subheader("1. Documentos Recuperados de la Base de Datos")
+                    st.info("Aquí ves el contenido COMPLETO de los documentos que el sistema encontró como potencialmente relevantes para tu pregunta. Son la 'materia prima'.")
                     for i, doc in enumerate(docs, 1):
-                        with st.container():
+                        with st.container(border=True):
                             fuente = _safe_get_source(doc)
-                            st.write(f"**📄 Documento {i}:**")
-                            st.write(f"**Fuente:** `{fuente}`")
-                            
-                            # Mostrar fragmento del contenido
-                            contenido = doc.page_content[:500] + "..." if len(doc.page_content) > 500 else doc.page_content
+                            st.write(f"**📄 Documento {i}:** `{fuente}`")
                             st.text_area(
-                                f"Contenido (primeros 500 caracteres):",
-                                contenido,
-                                height=100,
-                                key=f"doc_content_{i}"
+                                f"Contenido completo del Documento {i}",
+                                doc.page_content,
+                                height=200,
+                                key=f"full_doc_content_{i}"
                             )
-                            
-                            # Metadata adicional
-                            if doc.metadata:
-                                metadata_clean = {k: v for k, v in doc.metadata.items() if k != 'source'}
-                                if metadata_clean:
-                                    st.write(f"**Metadata:** {metadata_clean}")
-                            st.divider()
+                            st.json(doc.metadata, expanded=False)
                     
-                    st.subheader("🔄 Procesamiento paso a paso")
+                    st.subheader("2. Contexto Enviado al Primer Analista (Extractor)")
+                    st.info("Este es el texto EXACTO que se le entrega al primer modelo de IA. Es la unión de todos los documentos anteriores. Aquí es donde puede haber 'ruido' o información irrelevante.")
+                    st.text_area("Contexto completo", contexto, height=300, key="contexto_completo_debug")
                     
-                    # Paso 1: Contexto completo
-                    st.write("**1️⃣ Contexto enviado al Extractor:**")
-                    st.text_area("Contexto completo", contexto, height=150, key="contexto_completo")
+                    st.subheader("3. Respuesta Técnica del Extractor")
+                    st.info("Esta es la respuesta CRUDA del primer modelo de IA. Su única tarea es resumir los hechos del texto anterior y citar de dónde los sacó (ej. [DOC 1]). **Aquí podemos detectar si la primera IA ya está inventando o mezclando información.**")
+                    st.text_area("Extracción técnica (Salida cruda)", resp_tecnica, height=300, key="respuesta_tecnica_debug")
                     
-                    # Paso 2: Respuesta técnica
-                    st.write("**2️⃣ Respuesta técnica del Extractor:**")
-                    st.text_area("Extracción técnica", resp_tecnica, height=100, key="respuesta_tecnica")
-                    
-                    # Paso 3: Variables del prompt Eureka
-                    st.write("**3️⃣ Variables enviadas a Eureka:**")
-                    st.json({
-                        "original_question": user_q,
-                        "technical_summary": resp_tecnica[:200] + "..." if len(resp_tecnica) > 200 else resp_tecnica
-                    })
-                    
-                    # Análisis de contenido específico con detector corregido
-                    st.subheader("🔍 Análisis de especificidad")
-                    
-                    # Buscar nombres propios REALES en documentos (detector mejorado)
-                    import re
-                    nombres_propios_encontrados = set()
-                    # Patrón más preciso que excluye palabras comunes al inicio de oración
-                    patron_nombres = re.compile(r'\b[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]{2,}(?:\s+[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñ]{2,})*\b')
-                    
-                    for doc in docs:
-                        nombres_en_doc = patron_nombres.findall(doc.page_content)
-                        nombres_propios_encontrados.update(nombres_en_doc)
-                    
-                    # Filtrar palabras que NO son nombres específicos problemáticos
-                    palabras_excluir = {
-                        # Palabras legales comunes
-                        'Constitución', 'Artículo', 'República', 'Colombia', 'Nacional', 'Ministerio', 
-                        'ANLA', 'Autoridad', 'Estado', 'Gobierno', 'Congreso', 'Presidente', 'Corte',
-                        # Palabras comunes al inicio de párrafos
-                        'Por', 'Para', 'Según', 'Como', 'Cuando', 'Durante', 'Mediante', 'Además',
-                        'Igualmente', 'También', 'Asimismo', 'Sin', 'Con', 'Sobre', 'Entre', 'Bajo',
-                        'Ante', 'Tras', 'Desde', 'Hasta', 'Contra', 'Hacia', 'Los', 'Las', 'Una', 'Uno',
-                        'Esta', 'Este', 'Esa', 'Ese', 'Aquella', 'Aquel', 'Dicha', 'Dicho', 'Tal',
-                        # Acciones comunes
-                        'Conocer', 'Obtener', 'Solicitar', 'Informar', 'Participar', 'Consultar'
-                    }
-                    
-                    nombres_especificos = [n for n in nombres_propios_encontrados 
-                                         if n not in palabras_excluir and len(n) > 3]
-                    
-                    # Detectar casos específicos conocidos
-                    casos_especificos = []
-                    casos_conocidos = ['Gorgona', 'Cerrejón', 'Guajaro', 'Bruno', 'Bolívar', 'Mercedes']
-                    for caso in casos_conocidos:
-                        for doc in docs:
-                            if caso.lower() in doc.page_content.lower():
-                                casos_especificos.append(caso)
-                                break
-                    
-                    if casos_especificos:
-                        st.warning(f"⚠️ **Casos específicos detectados:** {', '.join(casos_especificos)}")
-                        st.write("*Estos casos podrían introducir información específica en respuestas generales*")
-                    elif nombres_especificos:
-                        st.info(f"ℹ️ **Nombres detectados:** {', '.join(nombres_especificos[:5])}")
-                        st.write("*Revisar si estos nombres son relevantes para la consulta*")
-                    else:
-                        st.success("✅ **No se detectaron nombres específicos problemáticos**")
-                    
-                    # Análisis de priorización de documentos
-                    tipos_docs = {'normativa': 0, 'jurisprudencia': 0, 'otros': 0}
-                    for doc in docs:
-                        fuente = _safe_get_source(doc).lower()
-                        if any(tipo in fuente for tipo in ['/normativa/', '/leyes/', '/decretos/']):
-                            tipos_docs['normativa'] += 1
-                        elif '/jurisprudencia/' in fuente:
-                            tipos_docs['jurisprudencia'] += 1
-                        else:
-                            tipos_docs['otros'] += 1
-                    
-                    st.write("**📊 Distribución de tipos de documentos:**")
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Normativa", tipos_docs['normativa'])
-                    with col2:
-                        st.metric("Jurisprudencia", tipos_docs['jurisprudencia']) 
-                    with col3:
-                        st.metric("Otros", tipos_docs['otros'])
-                    
-                    # Análisis de la pregunta
-                    st.subheader("❓ Análisis de la pregunta")
-                    st.write(f"**Pregunta original:** `{user_q}`")
-                    st.write(f"**Clasificada como:** `{intent}`")
-                    
-                    # Buscar términos generales vs específicos en la pregunta
-                    terminos_generales = ['embalse', 'proyecto', 'comunidad', 'compensación', 'empresa', 'municipio']
-                    terminos_en_pregunta = [t for t in terminos_generales if t.lower() in user_q.lower()]
-                    
-                    if terminos_en_pregunta:
-                        st.info(f"📝 **Términos generales detectados:** {', '.join(terminos_en_pregunta)}")
-                        st.write("*La respuesta debería mantenerse general*")
-                    
-                    # Sugerencias de mejora
-                    st.subheader("💡 Sugerencias de mejora")
-                    if nombres_especificos and terminos_en_pregunta:
-                        st.write("**Problema detectado:** La pregunta es general pero los documentos contienen información específica")
-                        st.write("**Recomendación:** Los prompts deberían filtrar mejor la información específica")
-                    elif not terminos_en_pregunta:
-                        st.write("**Observación:** La pregunta no contiene términos que requieran filtrado especial")
-                    else:
-                        st.write("**Estado:** Los documentos parecen apropiados para una respuesta general")
+                    st.subheader("4. Prompt Final Enviado a Eureka (El Chatbot)")
+                    st.info("Estas son las instrucciones EXACTAS que recibe el chatbot final. Incluyen las 'Reglas de Oro' y la 'Respuesta Técnica' del paso anterior. **Si la respuesta técnica es correcta pero la respuesta final es incorrecta, el problema está en cómo la IA final interpreta estas instrucciones.**")
+                    prompt_final_eureka = eureka_pt.format(**eureka_kwargs)
+                    st.text_area("Prompt completo para Eureka", prompt_final_eureka, height=400, key="prompt_final_debug")
 
             except Exception as e:
                 st.error(f"Ocurrió un error: {e}")
