@@ -86,7 +86,7 @@ MODELO_EMBEDDING = os.environ.get("EMBED_MODEL", "nomic-embed-text")
 MODELO_LLM = os.environ.get("LLM_MODEL", "llama3.2")
 NOMBRE_COLECCION = "sentencias_anla" 
 
-# Parámetros MMR optimizados
+# Parámetros MMR optimizados para mayor relevancia
 K_DOCUMENTOS = 5
 FETCH_K = 25
 MMR_LAMBDA = 0.5
@@ -398,7 +398,7 @@ if user_q:
                 
                 respuesta_final = acumulado
 
-                # Agregar fuentes (Lógica Mejorada)
+                # Agregar fuentes (Lógica Mejorada y Precisa)
                 fuentes_citadas = set()
                 # Extraer los índices de los documentos realmente usados desde la respuesta técnica
                 indices_usados = re.findall(r'\[DOC (\d+)', resp_tecnica)
@@ -415,10 +415,8 @@ if user_q:
                         except (ValueError, IndexError):
                             continue
                 
-                # Fallback: si no hay tags pero sí respuesta, citar todas las fuentes recuperadas
-                if not fuentes_citadas and "No he encontrado información" not in respuesta_final:
-                    fuentes_citadas = {_safe_get_source(d) for d in docs if _safe_get_source(d) != "Fuente no encontrada"}
-
+                # NO hay fallback. Si no se cita, no se muestra.
+                
                 if fuentes_citadas:
                     fuentes_ordenadas = sorted(list(fuentes_citadas))
                     # Solo añadir la sección de fuentes si hay fuentes que citar
