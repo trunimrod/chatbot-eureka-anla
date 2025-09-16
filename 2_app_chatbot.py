@@ -401,13 +401,36 @@ if user_q:
                 
                 respuesta_final = acumulado
 
-                # Agregar fuentes
-                fuentes = sorted({_safe_get_source(d) for d in docs if _safe_get_source(d) != "Fuente no encontrada"})
-                if fuentes and "No he encontrado información" not in respuesta_final:
-                    respuesta_final += "\n\n---\n**Fuentes consultadas:**\n" + "\n".join(f"• {u}" for u in fuentes)
-                    contenedor.markdown(respuesta_final)
+                # Agregar fuentes (Lógica Mejorada)
+                fuentes_citadas = set()
+                # Extraer los índices de los documentos realmente usados desde la respuesta técnica
+                indices_usados = re.findall(r'\[DOC (\d+)', resp_tecnica)
 
-                st.session_state.messages.append({"role": "assistant", "content": respuesta_final})
+                if indices_usados:
+                    # Construir la lista de fuentes a partir de los índices encontrados
+                    for i_str in set(indices_usados): # Usar set para evitar duplicados
+                        try:
+                            index = int(i_str) - 1
+                            if 0 <= index < len(docs):
+                                fuente = _safe_get_source(docs[index])
+                                if fuente != "Fuente no encontrada":
+                                    fuentes_citadas.add(fuente)
+                        except (ValueError, IndexError):
+                            continue
+                
+                # Fallback: si no hay tags pero sí respuesta, citar todas las fuentes recuperadas
+                if not fuentes_citadas and "No he encontrado información" not in respuesta_final:
+                    fuentes_citadas = {_safe_get_source(d) for d in docs if _safe_get_source(d) != "Fuente no encontrada"}
+
+                if fuentes_citadas:
+                    fuentes_ordenadas = sorted(list(fuentes_citadas))
+                    # Solo añadir la sección de fuentes si hay fuentes que citar
+                    respuesta_con_fuentes = respuesta_final + "\n\n---\n**Fuentes consultadas:**\n" + "\n".join(f"• {u}" for u in fuentes_ordenadas)
+                    contenedor.markdown(respuesta_con_fuentes)
+                    st.session_state.messages.append({"role": "assistant", "content": respuesta_con_fuentes})
+                else:
+                    st.session_state.messages.append({"role": "assistant", "content": respuesta_final})
+
 
                 # Información técnica con debugging administrativo
                 with st.expander("🔧 Vista de Administrador - Análisis de consulta"):
